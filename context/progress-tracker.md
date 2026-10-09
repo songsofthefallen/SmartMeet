@@ -1,10 +1,10 @@
 # Progress Tracker
 
 ## Current Phase
-Spec 01 — local application foundation completed and verified.
+Spec 02 — Clerk authentication implemented and locally verified; Clerk instance setup and live sign-in remain unverified.
 
 ## Current Goal
-Establish a repeatable local Next.js + FastAPI foundation and verify its health endpoint.
+Integrate Clerk sign-in/sign-up in Next.js and verify Clerk-issued identity tokens in FastAPI, while preserving Spec 01.
 
 ## Verified Completed
 - Discussed a small FastAPI prototype that accepts natural-language input and calls an LLM API.
@@ -18,6 +18,12 @@ Establish a repeatable local Next.js + FastAPI foundation and verify its health 
 - Added `GET /health`, a configurable frontend health-status indicator, local CORS configuration, Python requirements, safe environment examples, Python ignore rules, and local setup/test instructions.
 - Replaced the starter's build-time Google Fonts fetch with a system font fallback after the initial production build failed because the environment could not reach Google Fonts.
 - Added backend health and local CORS tests; the frontend handles checking, connected, and unavailable states, including a five-second timeout and invalid response handling.
+- Added `@clerk/nextjs` 7.9.13, `ClerkProvider`, Clerk sign-in/sign-up pages and controls, sign-out through `UserButton`, bare Next.js 16 `proxy.ts` Clerk middleware, and a server-protected `/dashboard` page.
+- The dashboard requests a Clerk session token and sends it to FastAPI as a Bearer token; the displayed user ID comes only from the verified `/auth/me` response.
+- Added reusable FastAPI `verify_clerk_token` dependency. It verifies RS256 signature, expiry/issued-at, required claims, configured issuer, and configured-origin `azp` when present. `/auth/me` returns the verified token subject; `/health` remains public.
+- CORS now permits the `Authorization` header while retaining configured frontend origins and GET-only methods.
+- Added generated-RSA authentication tests for valid identity, bad signature, expired token, wrong issuer, untrusted authorized party, missing/malformed authorization, missing server configuration, and public health access.
+- Added frontend and backend Clerk configuration placeholders to environment examples; no real keys or tokens were read, created, or committed.
 
 ## Verification Results
 - `python -m pytest` (from `backend/`): passed, 2 tests. Pytest emitted a cache-directory permission warning in this environment.
@@ -29,17 +35,23 @@ Establish a repeatable local Next.js + FastAPI foundation and verify its health 
 - `npm run lint`: passed after excluding Python-generated cache/virtual-environment files from ESLint traversal.
 - `npm run build`: passed, including compilation, type checking, and static page generation.
 - Manually verified in the browser that the frontend shows Backend connected while FastAPI is running and Backend unavailable after FastAPI is stopped.
-- No application dependencies were installed during this change; existing Node dependencies and globally available Python packages were used for verification.
+- `python -m pytest -p no:cacheprovider tests` (from `backend/`): passed, 12 tests (10 authentication cases and 2 Spec 01 health/CORS tests).
+- `npm run lint`: passed.
+- `npx tsc --noEmit`: passed.
+- `npm run build`: passed with Next.js 16.4.0 and `@clerk/nextjs` 7.9.13.
+- Next.js 16 prerender constraints around auth-aware and path-aware Clerk components were addressed with Suspense boundaries; the protected dashboard is request-time rendered.
+- Clerk sign-in against a configured Clerk instance was not manually verified because this workspace has no configured instance keys. Unit tests use locally generated RSA keys and do not prove the configured Clerk instance will issue matching tokens.
+- An inaccessible pytest-created temporary directory initially blocked test discovery and Turbopack scanning; it was removed, ignored by `.gitignore`, and the final checks passed afterward.
 
 ## In Progress
-- None
+- Manual Clerk instance configuration and browser sign-in verification.
 
 ## Next Up
-1. Define Spec 02 for Clerk authentication and the trusted identity boundary between Next.js and FastAPI.
-2. Verify the Clerk-to-FastAPI token verification approach before implementation.
+1. In local development only, configure the Clerk keys and FastAPI verification values listed below, start both apps, and verify registration, sign-in, dashboard identity, and sign-out in a browser.
+2. Stop after Spec 02; do not start later feature work until explicitly requested.
 
 ## Open Questions
-- Which Clerk token-forwarding and verification approach will be used for FastAPI?
+- Live Clerk instance/browser verification remains outstanding. For deployment, which frontend origins and Clerk issuer values will be configured?
 - How will deployment origins, CORS, and CSRF protections be configured where applicable?
 - Which durable scheduler/queue will trigger reminders?
 - Which Web Push library and key-management approach will be used?
@@ -61,7 +73,8 @@ Establish a repeatable local Next.js + FastAPI foundation and verify its health 
 - Confirmed direction: support arrival and departure wording; clarify ambiguity.
 - Confirmed direction: Web Push with a service worker is preferred over page-only timers; exact implementation is undecided.
 - Confirmed priority: learn software engineering while delivering a usable MVP.
-- Undecided: Clerk token verification details, deployment topology, durable background scheduler, Web Push library/key setup, maps/weather providers.
+- Spec 02 implementation: Next.js forwards the Clerk session token in a Bearer header; FastAPI manually verifies RS256 tokens using the configured Clerk JWT public key, exact issuer, and allowed frontend origins. Configure these values per Clerk instance and deployment.
+- Undecided: deployment topology and production origins, durable background scheduler, Web Push library/key setup, maps/weather providers.
 - Proposed: AI extracts intent; backend validates and calculates.
 - Proposed: isolate provider integrations behind adapters.
 - Proposed: reminder delivery should be idempotent where feasible.
@@ -71,3 +84,9 @@ Establish a repeatable local Next.js + FastAPI foundation and verify its health 
 - Never store real API keys in these context files.
 - Update this tracker after meaningful implementation changes and keep status factual.
 - Spec 01 is completed and verified. Backend tests, health endpoint, CORS, frontend status transitions, lint, TypeScript checks, and production build have been verified.
+
+## Spec 02 Environment Variables and Manual Setup
+- Frontend `.env.local`: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (development publishable key), `CLERK_SECRET_KEY` (development secret key, server-only), and existing `NEXT_PUBLIC_API_BASE_URL`.
+- Backend `backend/.env`: `CLERK_JWT_KEY` (Clerk instance JWT verification public key in PEM format), `CLERK_ISSUER` (exact issuer from a Clerk session token), and existing `FRONTEND_ORIGINS` (comma-separated allowed browser origins; also used to validate `azp`).
+- Manual setup: create or select a Clerk development instance, copy its development keys into ignored local environment files, configure the JWT public key and exact issuer, then start Next.js and FastAPI and verify sign-up/sign-in/sign-out and the dashboard's verified ID in a browser.
+- No actual Clerk user/session was created or tested in this implementation. Do not put production keys in local examples or tests.
