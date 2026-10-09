@@ -1,0 +1,20 @@
+.status {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 2rem;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.indicator {
+  width: 0.6rem;
+  height: 0.6rem;
+  flex: none;
+  border-radius: 9999px;
+  background: var(--text-muted);
+}
+
+.checking { background: var(--state-warning); }
+.connected { background: var(--state-success); }
+.unavailable { background: var(--state-error); }

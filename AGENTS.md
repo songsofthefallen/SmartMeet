@@ -1,9 +1,32 @@
-<!-- BEGIN:nextjs-agent-rules -->
+# Deadline Notifier — Agent Instructions
 
-## This is NOT the Next.js you know
+## Purpose
+These instructions govern AI-assisted development of Deadline Notifier.
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+## Read Before Implementation
+Read these files in order:
+1. `context/project-overview.md`
+2. `context/architecture-context.md`
+3. `context/ai-workflow-rules.md`
+4. `context/ui-context.md` when changing UI
+5. `context/code-standards.md`
+6. `context/decisions.md` when a design choice is involved
+7. `context/progress-tracker.md`
 
-This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+## Workflow
+- Work on one small, verifiable feature at a time.
+- Do not implement requirements that are not defined. Record ambiguity as an open question in `context/progress-tracker.md`.
+- Keep AI interpretation separate from deterministic business logic.
+- Validate all user input and all external API responses.
+- Never expose API keys or secrets in frontend code, logs, committed files, or generated examples.
+- Do not claim a feature is complete until it has been implemented and tested.
+- Update the relevant context file when scope, architecture, standards, or a major decision changes.
+- Update `context/progress-tracker.md` after each meaningful implementation change.
+- Keep progress factual; distinguish implemented, tested, planned, and blocked work.
 
-<!-- END:nextjs-agent-rules -->
+## Implementation Principles
+- Prefer simple, maintainable solutions over premature abstraction.
+- Keep route handlers thin; move reusable business logic into services.
+- Add a repository/data-access layer where it helps isolate persistence.
+- Use automated tests for date/time parsing, schedule calculations, validation, and failure cases.
+- Read installed framework/library documentation when using version-sensitive APIs.

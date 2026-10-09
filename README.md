@@ -1,24 +1,26 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-## Getting Started
+## Local development
 
-First, run the development server:
+The Next.js TypeScript app remains at the repository root. FastAPI lives in `backend/`.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+1. Copy `.env.example` to `.env.local` and keep `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000`. This public value is only the API address; do not put secrets in `NEXT_PUBLIC_*` variables.
+2. In terminal one, run `npm ci` to install from the existing lockfile, then `npm run dev`. The frontend is at [http://localhost:3000](http://localhost:3000).
+3. In terminal two, create and activate a Python virtual environment, install backend requirements, then start the API:
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+   ```powershell
+   cd backend
+   py -m venv .venv
+   .venv\Scripts\Activate.ps1
+   python -m pip install -r requirements.txt
+   Copy-Item .env.example .env
+   python -m uvicorn main:app --reload --port 8000
+   ```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+   The API is at [http://localhost:8000](http://localhost:8000); `GET /health` returns `{"status":"ok"}`. `FRONTEND_ORIGINS` is a comma-separated allowlist and defaults to `http://localhost:3000`.
+4. Run backend tests from `backend/` with `python -m pytest`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The home page reports whether the backend health endpoint is checking, connected, or unavailable. The request times out after five seconds. To use another API address, change `NEXT_PUBLIC_API_BASE_URL` in `.env.local` and restart Next.js.
 
 ## Learn More
 
