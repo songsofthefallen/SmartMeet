@@ -27,7 +27,10 @@ class Schedule(Base):
 
     __tablename__ = "schedules"
     __table_args__ = (
-        CheckConstraint("preparation_duration_minutes >= 0", name="ck_schedules_preparation_nonnegative"),
+        CheckConstraint(
+            "preparation_duration_minutes IS NULL OR preparation_duration_minutes >= 0",
+            name="ck_schedules_preparation_nonnegative",
+        ),
         CheckConstraint(
             "travel_duration_minutes IS NULL OR travel_duration_minutes >= 0",
             name="ck_schedules_travel_nonnegative",
@@ -54,7 +57,7 @@ class Schedule(Base):
     )
     target_datetime: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
-    preparation_duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    preparation_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     travel_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     calculated_departure_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     calculated_wake_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

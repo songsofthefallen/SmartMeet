@@ -36,7 +36,7 @@ class ScheduleCreate(BaseModel):
     time_intent: TimeIntent
     target_datetime: datetime
     timezone: NonEmptyTimezone
-    preparation_duration_minutes: DurationMinutes
+    preparation_duration_minutes: DurationMinutes | None = None
     travel_duration_minutes: DurationMinutes | None = None
 
     @field_validator("target_datetime")
@@ -66,7 +66,7 @@ class ScheduleUpdate(BaseModel):
 
     @model_validator(mode="after")
     def disallow_null_for_non_nullable_fields(self) -> "ScheduleUpdate":
-        nullable_fields = {"description", "travel_duration_minutes"}
+        nullable_fields = {"description", "travel_duration_minutes", "preparation_duration_minutes"}
         for field_name in self.model_fields_set - nullable_fields:
             if getattr(self, field_name) is None:
                 raise ValueError(f"{field_name} cannot be null")
@@ -93,7 +93,7 @@ class ScheduleResponse(BaseModel):
     time_intent: TimeIntent
     target_datetime: datetime
     timezone: str
-    preparation_duration_minutes: int
+    preparation_duration_minutes: int | None
     travel_duration_minutes: int | None
     calculated_departure_time: datetime | None
     calculated_wake_time: datetime | None

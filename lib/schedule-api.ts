@@ -8,7 +8,7 @@ export type Schedule = {
   time_intent: ScheduleIntent;
   target_datetime: string;
   timezone: string;
-  preparation_duration_minutes: number;
+  preparation_duration_minutes: number | null;
   travel_duration_minutes: number | null;
   calculated_departure_time: string | null;
   calculated_wake_time: string | null;
@@ -23,7 +23,7 @@ export type ScheduleInput = {
   time_intent: ScheduleIntent;
   target_datetime: string;
   timezone: string;
-  preparation_duration_minutes: number;
+  preparation_duration_minutes: number | null;
   travel_duration_minutes: number | null;
 };
 
@@ -52,7 +52,7 @@ function isSchedule(value: unknown): value is Schedule {
     (value.time_intent === "arrival" || value.time_intent === "departure") &&
     typeof value.target_datetime === "string" &&
     typeof value.timezone === "string" &&
-    typeof value.preparation_duration_minutes === "number" &&
+    (typeof value.preparation_duration_minutes === "number" || value.preparation_duration_minutes === null) &&
     (typeof value.travel_duration_minutes === "number" || value.travel_duration_minutes === null) &&
     (typeof value.calculated_departure_time === "string" || value.calculated_departure_time === null) &&
     (typeof value.calculated_wake_time === "string" || value.calculated_wake_time === null) &&

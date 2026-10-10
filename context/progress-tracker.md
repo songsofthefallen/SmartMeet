@@ -1,40 +1,45 @@
 ## Current Spec
 
-**Spec 07 - Connect Schedule UI to API** is implemented. The schedule workspace now loads persisted schedules and uses the authenticated API for details, create, update, and cancel operations. UI success states follow confirmed API responses.
+**Spec 08 - Schedule Intent and Validation** is implemented and automated checks pass. Schedule intent remains explicitly represented by the existing `arrival`/`departure` enum, while the form now requires an explicit selection. Required fields are title (existing product field), intent, target local date/time, and IANA timezone. Preparation and travel durations are optional; null means unknown and is never replaced with zero.
 
 ### Scope and implementation
 
-- Added `lib/schedule-api.ts` for Bearer-authenticated schedule API calls, runtime response validation, and safe messages for validation, session, missing-record, server, and network errors.
-- Replaced the schedule mock fixtures and local-only mutations with API requests. Loading, API failure, empty, success, save, and cancel states reflect server responses; failed requests do not update local schedule data or report success.
-- Date/time input is converted using the selected IANA timezone to an offset-aware instant; nonexistent local times are rejected. The timezone selector lists browser-supported IANA zones with current GMT offsets and defaults to Asia/Manila. No departure or wake-up calculations were added.
-- Follow-up timezone fix: request datetimes are normalized to UTC before persistence, and responses serialize naive MySQL DATETIME values as explicit UTC. This corrects Manila 08:00 being returned as a timezone-less midnight value; no schema migration was needed.
-- Expanded FastAPI CORS from GET-only to the required GET, POST, and PATCH methods. `FRONTEND_ORIGINS` remains an explicit allowlist; request headers remain limited to Accept, Authorization, and Content-Type; credentials remain disabled. Added preflight tests for the configured local origin and rejection of an untrusted origin.
-- No database schema, ownership enforcement, or authentication verification changes were made.
+- The create/update/response contracts, SQLAlchemy model, frontend API types, and form consistently allow a missing preparation duration and unknown travel duration. Existing records retain their current preparation values.
+- Added Alembic revision `20261010_0002` to make preparation duration nullable safely. It preserves existing rows and retains a nonnegative check when a value is supplied. The migration was rendered as MySQL SQL but has not been applied to a database.
+- The schedule editor no longer defaults intent to arrival or inserts a preparation duration. It labels the choices “Arrive by” and “Leave at,” validates required fields before submitting, and shows null durations as “Not provided”/“Unknown.” The API response is the source of saved/success state; failures preserve the form.
+- Local `datetime-local` values are converted using the chosen IANA timezone. Invalid/nonexistent local times and repeated daylight-saving times are rejected instead of silently resolved. Offset-aware instants continue to round-trip as UTC with the selected timezone used for local display. Past times remain allowed.
+- No AI extraction, calculation engine, routing, weather, notifications, auth changes, or unrelated refactoring were added.
 
 ### Changed files
 
-- `app/schedules/schedule-workspace.tsx` - loads and mutates schedules through the API, with server-confirmed UI state and a timezone selector.
-- `backend/schemas.py` - normalizes submitted timestamps to UTC and serializes stored UTC values with an explicit UTC marker.
-- `backend/tests/test_schedules.py` and `backend/tests/test_schedule_api.py` - cover timezone normalization and API timestamp round trips.
-- `lib/schedule-api.ts` - typed authenticated API client and response/error validation.
-- `backend/main.py` - allows only the API's required cross-origin methods for configured origins.
-- `backend/tests/test_health.py` - verifies allowed schedule preflight and rejected untrusted origin.
-- `context/progress-tracker.md` - records Spec 07 results and outstanding verification.
+- `app/schedules/schedule-workspace.tsx` - explicit intent, optional duration inputs, and strict local-time/DST validation.
+- `lib/schedule-api.ts` - nullable preparation duration in client types and runtime response validation.
+- `backend/models.py`, `backend/schemas.py` - nullable preparation duration contract and persistence semantics.
+- `backend/alembic/versions/20261010_0002_optional_preparation_duration.py` - safe nullable-column migration.
+- `backend/tests/test_schedules.py`, `backend/tests/test_schedule_api.py` - required-field, both-intent, optional-duration, and persistence coverage.
+- `context/progress-tracker.md` - this Spec 08 record and Spec 07 completion history.
 
 ### Verification results
 
-- `python -m pytest -p no:cacheprovider` from `backend/`: **passed, 37 tests**.
+- `python -m pytest -p no:cacheprovider` from `backend/`: **passed, 42 tests**.
 - `npm run lint`: **passed**.
 - `npx tsc --noEmit`: **passed**.
-- `npm run build`: **passed**; `/schedules` remains Clerk-protected and dynamically rendered.
-- A local interactive browser workflow was not verified: `npm run dev` exited with `spawn EPERM`; `npm run start` found port 3000 already in use, and browser discovery returned no available browser.
-- A Manila 08:00 create/read/update/cancel round trip passed against configured MySQL using a generated test Clerk key and an outer transaction rolled back after verification; no schedule row was retained. The response consistently returned the instant as 00:00Z, which displays as 08:00 in Asia/Manila. This verifies the database/API path, not a real Clerk browser session.
-- API preflight behavior is covered by backend tests. Production frontend-origin configuration and live browser CORS behavior remain deployment-specific and unverified. `git diff --check` passed.
+- `npm run build`: **passed**.
+- `alembic upgrade head --sql`: **passed**; generated MySQL SQL for both revisions including the nullable preparation-duration alteration. No live migration was applied.
+- `git diff --check`: **passed** (Git reported expected LF-to-CRLF normalization notices).
+- Browser workflow and actual database migration were not verified in this turn. Frontend date conversion is covered by code review/build but has no dedicated automated test harness in the repository.
 
-### Next step
+### Remaining verification
 
-Spec 07 is complete. Stop here; proceed only to the next explicitly requested spec.
+Apply revision `20261010_0002` through the normal migration workflow before using null preparation durations against an existing database. Manually verify the schedule form in a browser, including DST gap and repeated-time cases.
 
+## Completed Specs
+
+### Spec 07 - Connect Schedule UI to API
+
+Implemented and verified before Spec 08. The schedule workspace uses the authenticated API for list, detail, create, update, and cancel; successful UI state follows API confirmation. CORS uses a configured origin allowlist. It also established UTC normalization with IANA timezone display.
+
+**Recorded verification at Spec 07 completion:** backend suite passed (37 tests), lint, TypeScript, production build, and `git diff --check` passed. MySQL create/read/update/cancel was exercised inside a transaction and rolled back; no browser workflow was verified. See the prior Spec 07 record in repository history for its full details.
 ## Completed Specs
 
 ### Spec 06 - Schedule API
@@ -52,23 +57,23 @@ Implemented with temporary mock data. Added the protected `/schedules` interface
 **Recorded verification:** `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed. Interactive browser flows were not verified; the initial fixture was populated, so the empty state was not manually checked.
 
 
-### Spec 04 — Schedule Data Model
+### Spec 04 â€” Schedule Data Model
 
 Implemented and verified. Added the SQLAlchemy schedule model, Pydantic create/update/response schemas, initial Alembic migration, dependencies, and migration documentation. The model includes Clerk ownership, time intent, timezone-aware target time, durations, optional calculated fields, status, timestamps, constraints, and indexes. It did not add CRUD routes, calculations, or frontend behavior. Backend suite passed (26 tests); Alembic applied to configured MySQL, current revision was `20261010_0001`, `alembic check` found no metadata differences, and inspection confirmed 14 columns, two indexes, and four checks. Other MySQL versions/configurations remain unverified.
 
-### Spec 03 — Database Foundation
+### Spec 03 â€” Database Foundation
 
 **Implemented and unit verified; live MySQL connectivity and migration were not part of its original verification.** Added `backend/database.py` with a lazy reused SQLAlchemy engine (`pool_pre_ping=True`), session factory, FastAPI `get_db` dependency, and safe `SELECT 1` connectivity check. It validates `DATABASE_URL` as a complete `mysql+pymysql` URL and returns credential-safe configuration errors. Added SQLAlchemy/PyMySQL, a placeholder in `backend/.env.example`, database tests, and initial setup notes in `README.md`.
 
 **Recorded checks at completion:** backend tests passed (21 tests); SQLite was used for connectivity/session lifecycle tests, so MySQL was not verified then. Spec 04 subsequently verified connectivity and applied its migration on the configured MySQL database.
 
-### Spec 01 — Local Foundation and Health Check
+### Spec 01 â€” Local Foundation and Health Check
 
 **Implemented and verified.** Kept the existing root Next.js TypeScript app and added the separate FastAPI backend, public `GET /health`, configured local CORS, frontend backend-status states, environment examples, Python ignore rules, and local setup/test instructions. Replaced the starter's build-time Google Fonts fetch with a system font fallback after the build could not reach Google Fonts.
 
 **Recorded checks:** backend health/CORS tests passed; FastAPI and Next.js development servers started; live `/health` returned HTTP 200 with `{"status":"ok"}` and the expected local CORS header; frontend connected/unavailable states were manually checked; lint, TypeScript, and production build passed. Initial pytest cache permission and font-network issues were resolved before the recorded final checks.
 
-### Spec 02 — Clerk Authentication
+### Spec 02 â€” Clerk Authentication
 
 **Implementation and automated checks complete; live Clerk instance verification remains outstanding.** Added Clerk Next.js integration, sign-in/sign-up controls and pages, sign-out, protected `/dashboard`, and Bearer-token forwarding to FastAPI. Added reusable FastAPI Clerk token verification and protected `GET /auth/me`; it checks RS256 signature, expiry/issued-at, required claims, issuer, and allowed `azp`. CORS permits Authorization while retaining configured origins and GET-only methods. `/health` stays public.
 

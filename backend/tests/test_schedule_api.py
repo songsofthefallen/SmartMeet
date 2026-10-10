@@ -132,6 +132,21 @@ def test_create_validation_and_client_owner_id_are_rejected(
     assert client.post("/schedules", headers=headers, json=payload(clerk_user_id="user_victim")).status_code == 422
 
 
+@pytest.mark.parametrize("intent", ["arrival", "departure"])
+def test_api_persists_intent_and_unknown_durations(
+    api_db: None, signing_key: str, intent: str
+) -> None:
+    response = TestClient(app).post(
+        "/schedules",
+        headers=bearer(signing_key),
+        json=payload(time_intent=intent, preparation_duration_minutes=None, travel_duration_minutes=None),
+    )
+    assert response.status_code == 201
+    assert response.json()["time_intent"] == intent
+    assert response.json()["preparation_duration_minutes"] is None
+    assert response.json()["travel_duration_minutes"] is None
+
+
 @pytest.mark.parametrize("method,path", [("get", "/schedules/987"), ("patch", "/schedules/987"), ("post", "/schedules/987/cancel")])
 def test_missing_schedule_returns_404(
     api_db: None, signing_key: str, method: str, path: str

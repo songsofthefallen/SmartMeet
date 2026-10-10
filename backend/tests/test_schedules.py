@@ -56,6 +56,29 @@ def test_create_schema_validates_enums_timezone_and_durations() -> None:
             ScheduleCreate.model_validate(valid_schedule_payload() | changes)
 
 
+@pytest.mark.parametrize("intent", ["arrival", "departure"])
+def test_both_explicit_intents_allow_unknown_optional_durations(intent: str) -> None:
+    parsed = ScheduleCreate.model_validate(
+        valid_schedule_payload()
+        | {"time_intent": intent, "preparation_duration_minutes": None, "travel_duration_minutes": None}
+    )
+    assert parsed.time_intent.value == intent
+    assert parsed.preparation_duration_minutes is None
+    assert parsed.travel_duration_minutes is None
+
+
+def test_create_schema_requires_intent_target_and_timezone() -> None:
+    for changes in (
+        {"time_intent": None},
+        {"target_datetime": None},
+        {"timezone": ""},
+        {"target_datetime": "2026-02-30T07:00:00+08:00"},
+        {"target_datetime": "2026-10-11T07:00:00"},
+    ):
+        with pytest.raises(ValidationError):
+            ScheduleCreate.model_validate(valid_schedule_payload() | changes)
+
+
 def test_update_schema_is_partial_and_rejects_null_required_fields() -> None:
     update = ScheduleUpdate.model_validate({"title": "Updated title"})
     assert update.model_dump(exclude_unset=True) == {"title": "Updated title"}
