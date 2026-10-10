@@ -2,50 +2,39 @@
 
 ## Current Spec
 
-**Spec 04 — Schedule Data Model** is implemented and verified. The initial migration was applied to the configured MySQL database, and Alembic reports no metadata differences.
+**Spec 05 — Schedule Interface** is implemented with temporary client-side mock data. Schedule operations are not connected to FastAPI or MySQL and reset when the page reloads.
 
 ### Scope and implementation
 
-- Added `backend/models.py` with SQLAlchemy 2.x declarative metadata, a Clerk-owned `Schedule` table, enum values, nonnegative duration constraints, user/status indexes, and timestamps. No users table was introduced.
-- Added `backend/schemas.py` with create, partial update, and ORM response schemas. Inputs reject extra fields, invalid enum values, negative durations, naive datetimes, and invalid IANA timezones. The create contract does not accept a Clerk user ID; the authenticated service must supply ownership from trusted identity.
-- Added `backend/alembic.ini`, `backend/alembic/env.py`, the migration template, and initial revision `20261010_0001`. Alembic imports `Base.metadata` and reads the same `DATABASE_URL` through the Spec 03 validator; it loads ignored `backend/.env` for its CLI.
-- Added Alembic, Pydantic, and python-dotenv requirements. Documented migration commands and MySQL datetime behavior in `README.md`.
-- Existing Spec 03 `database.py`, Clerk authentication, and `/health` behavior were not modified. No CRUD endpoints, calculations, frontend behavior, or notifications were added.
+- Added protected `/schedules` route using the existing Clerk `auth.protect()` pattern.
+- Built responsive upcoming schedule list and detail panel, create/edit form, and cancel confirmation. Form fields follow Spec 04 create/update schemas; frontend validates required values and nonnegative durations.
+- Included loading, empty, success, validation error, and cancellation states. The interface labels mock schedules and explains that no changes are persisted. It does not calculate departure/wake-up times or implement notifications.
+- Added a root `.pytest_cache/**` ESLint ignore after `npm run lint` failed to scan the inaccessible cache directory. Added `instant = false` to the protected page to follow the existing dashboard convention and support this app's Cache Components prerendering.
 
 ### Changed files
 
-- `backend/models.py`
-- `backend/schemas.py`
-- `backend/alembic.ini`
-- `backend/alembic/env.py`
-- `backend/alembic/script.py.mako`
-- `backend/alembic/versions/20261010_0001_create_schedules.py`
-- `backend/tests/test_schedules.py`
-- `backend/requirements.txt`
-- `README.md`
+- `app/schedules/page.tsx`
+- `app/schedules/schedule-workspace.tsx`
+- `eslint.config.mjs`
 - `context/progress-tracker.md`
 
 ### Verification results
 
-- `python -m pytest -p no:cacheprovider tests` from `backend/`: **passed, 26 tests**, including model/schema tests and the existing database, authentication, and health tests.
-- Schedule model persistence tests use in-memory SQLite and are unit checks only; the live MySQL result below is separately verified.
-- `python -m alembic upgrade head`: **applied successfully** to configured MySQL. The database had no prior `schedules` or `alembic_version` table; the migration created the schedule table and version table without deleting or resetting existing data.
-- `python -m alembic current`: **20261010_0001 (head)**.
-- `python -m alembic check`: **passed; no new upgrade operations detected** against live MySQL metadata.
-- MySQL inspection confirmed all 14 expected schedule columns, two indexes, and four check constraints. `SHOW CREATE TABLE schedules` confirmed the resulting MySQL DDL.
-- `python -m alembic upgrade head --sql`: generated MySQL-dialect SQL successfully. This was a supplementary compile check, not used as proof of a live migration.
-- `git diff --check`: no whitespace errors; Git emitted line-ending conversion notices for edited text files.
-- Frontend checks: **not run**, because no frontend files or behavior changed.
-
-### Environment and manual verification
-
-For another environment, set `DATABASE_URL` in ignored `backend/.env`, using `mysql+pymysql://user:password@host:3306/database`; create the database and grant the application account access first, and URL-encode reserved characters in credentials. Install `backend/requirements.txt`, then run `python -m alembic upgrade head` from `backend/`. MySQL `DATETIME` does not preserve offsets: submit aware datetimes and store UTC instants alongside the IANA timezone field. Migration behavior has been verified on the currently configured MySQL instance; behavior on other MySQL versions/configurations remains unverified.
+- `npm run lint`: **passed**.
+- `npx tsc --noEmit`: **passed**.
+- `npm run build`: **passed**; `/schedules` is server-rendered behind Clerk protection.
+- `git diff --check`: **passed**.
+- Interactive browser checks were not performed. Clerk access behavior, responsive rendering, and client-side create/edit/cancel flows are implemented but not manually verified in a browser. Empty state is supported by the component but the initial mock fixture is populated.
 
 ### Next step
 
-Spec 04 is complete. Proceed to a later feature spec only when explicitly requested.
+Spec 05 is complete. Stop here; do not proceed to another spec without an explicit request.
 
 ## Completed Specs
+
+### Spec 04 — Schedule Data Model
+
+Implemented and verified. Added the SQLAlchemy schedule model, Pydantic create/update/response schemas, initial Alembic migration, dependencies, and migration documentation. The model includes Clerk ownership, time intent, timezone-aware target time, durations, optional calculated fields, status, timestamps, constraints, and indexes. It did not add CRUD routes, calculations, or frontend behavior. Backend suite passed (26 tests); Alembic applied to configured MySQL, current revision was `20261010_0001`, `alembic check` found no metadata differences, and inspection confirmed 14 columns, two indexes, and four checks. Other MySQL versions/configurations remain unverified.
 
 ### Spec 03 — Database Foundation
 
