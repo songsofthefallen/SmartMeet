@@ -18,6 +18,7 @@ The Next.js TypeScript app remains at the repository root. FastAPI lives in `bac
    ```
 
    The API is at [http://localhost:8000](http://localhost:8000); `GET /health` returns `{"status":"ok"}`. `FRONTEND_ORIGINS` is a comma-separated allowlist and defaults to `http://localhost:3000`.
+   Configure `DATABASE_URL` in `backend/.env` with a MySQL account and database before using database-backed endpoints. The format is `mysql+pymysql://user:password@host:3306/database`; URL-encode reserved characters in credentials. Spec 03 does not create the database, so create it and grant the account access in your MySQL instance first. Backend unit tests use SQLite in memory for session checks and do not require MySQL.
 4. Run backend tests from `backend/` with `python -m pytest`.
 
 The home page reports whether the backend health endpoint is checking, connected, or unavailable. The request times out after five seconds. To use another API address, change `NEXT_PUBLIC_API_BASE_URL` in `.env.local` and restart Next.js.

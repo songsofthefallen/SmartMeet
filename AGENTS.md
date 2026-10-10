@@ -11,7 +11,7 @@ Read these files in order:
 4. `context/ui-context.md` when changing UI
 5. `context/code-standards.md`
 6. `context/decisions.md` when a design choice is involved
-7. `context/progress-tracker.md`
+7. `context/progress-tracker.md` 
 
 ## Workflow
 - Work on one small, verifiable feature at a time.
@@ -21,7 +21,7 @@ Read these files in order:
 - Never expose API keys or secrets in frontend code, logs, committed files, or generated examples.
 - Do not claim a feature is complete until it has been implemented and tested.
 - Update the relevant context file when scope, architecture, standards, or a major decision changes.
-- Update `context/progress-tracker.md` after each meaningful implementation change.
+- Update `context/progress-tracker.md` after each meaningful implementation change and remove those in verified result or atleast put the summary in the verified complete and empty current progress if its all work assign is done.
 - Keep progress factual; distinguish implemented, tested, planned, and blocked work.
 
 ## Implementation Principles

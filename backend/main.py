@@ -35,7 +35,7 @@ def verify_clerk_token(authorization: str | None = Header(default=None)) -> str:
     if not token:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    public_key = os.getenv("CLERK_JWT_KEY")
+    public_key = os.getenv("CLERK_JWT_KEY", "").replace("\\n", "\n")
     issuer = os.getenv("CLERK_ISSUER")
     if not public_key or not issuer:
         raise HTTPException(status_code=503, detail="Authentication is not configured")
