@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import create_engine
@@ -43,7 +43,7 @@ def test_schedule_model_persists_fields_and_defaults_in_sqlite() -> None:
 def test_create_schema_validates_enums_timezone_and_durations() -> None:
     parsed = ScheduleCreate.model_validate(valid_schedule_payload())
     assert parsed.time_intent is TimeIntent.ARRIVAL
-    assert parsed.target_datetime.utcoffset() is not None
+    assert parsed.target_datetime == datetime(2026, 10, 10, 23, tzinfo=timezone.utc)
 
     for changes in (
         {"time_intent": "unknown"},
@@ -67,6 +67,8 @@ def test_update_schema_is_partial_and_rejects_null_required_fields() -> None:
 
     assert ScheduleUpdate.model_validate({"description": None}).description is None
     assert ScheduleUpdate.model_validate({"travel_duration_minutes": None}).travel_duration_minutes is None
+    timezone_update = ScheduleUpdate.model_validate({"target_datetime": "2026-10-11T08:00:00+08:00"})
+    assert timezone_update.target_datetime == datetime(2026, 10, 11, 0, tzinfo=timezone.utc)
 
 
 def test_response_schema_reads_orm_attributes() -> None:
@@ -89,6 +91,52 @@ def test_response_schema_reads_orm_attributes() -> None:
     response = ScheduleResponse.model_validate(schedule)
     assert response.id == 7
     assert response.status is ScheduleStatus.ACTIVE
+
+
+def test_response_serializes_naive_database_datetime_as_utc() -> None:
+    schedule = Schedule(
+        id=8,
+        clerk_user_id="user_123",
+        title="Morning class",
+        description=None,
+        time_intent=TimeIntent.ARRIVAL,
+        target_datetime=datetime(2026, 10, 11, 0),
+        timezone="Asia/Manila",
+        preparation_duration_minutes=30,
+        travel_duration_minutes=None,
+        calculated_departure_time=None,
+        calculated_wake_time=None,
+        status=ScheduleStatus.ACTIVE,
+        created_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
+    )
+
+    serialized = ScheduleResponse.model_validate(schedule).model_dump(mode="json")
+
+    assert serialized["target_datetime"] == "2026-10-11T00:00:00Z"
+
+
+def test_response_normalizes_offset_datetime_to_utc() -> None:
+    schedule = Schedule(
+        id=9,
+        clerk_user_id="user_123",
+        title="Morning class",
+        description=None,
+        time_intent=TimeIntent.ARRIVAL,
+        target_datetime=datetime(2026, 10, 11, 8, tzinfo=timezone(timedelta(hours=8))),
+        timezone="Asia/Manila",
+        preparation_duration_minutes=30,
+        travel_duration_minutes=None,
+        calculated_departure_time=None,
+        calculated_wake_time=None,
+        status=ScheduleStatus.ACTIVE,
+        created_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 10, 10, tzinfo=timezone.utc),
+    )
+
+    serialized = ScheduleResponse.model_validate(schedule).model_dump(mode="json")
+
+    assert serialized["target_datetime"] == "2026-10-11T00:00:00Z"
 
 
 def test_schedule_model_constraints_and_indexes_are_declared() -> None:

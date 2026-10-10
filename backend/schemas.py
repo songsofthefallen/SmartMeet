@@ -1,10 +1,10 @@
 """Pydantic contracts for schedule data."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_serializer, field_validator, model_validator
 
 from models import ScheduleStatus, TimeIntent
 
@@ -12,7 +12,7 @@ from models import ScheduleStatus, TimeIntent
 def _require_aware(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must include a UTC offset")
-    return value
+    return value.astimezone(timezone.utc)
 
 
 def _require_timezone(value: str) -> str:
@@ -100,3 +100,18 @@ class ScheduleResponse(BaseModel):
     status: ScheduleStatus
     created_at: datetime
     updated_at: datetime
+
+    @field_serializer(
+        "target_datetime",
+        "calculated_departure_time",
+        "calculated_wake_time",
+        when_used="json",
+    )
+    def serialize_schedule_times(self, value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            value = value.replace(tzinfo=timezone.utc)
+        else:
+            value = value.astimezone(timezone.utc)
+        return value.isoformat().replace("+00:00", "Z")

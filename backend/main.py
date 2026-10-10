@@ -17,7 +17,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=configured_origins(),
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["Accept", "Authorization", "Content-Type"],
 )
 
@@ -62,3 +62,8 @@ def verify_clerk_token(authorization: str | None = Header(default=None)) -> str:
 @app.get("/auth/me")
 def auth_me(user_id: Annotated[str, Depends(verify_clerk_token)]) -> dict[str, str]:
     return {"user_id": user_id}
+
+
+from routers.schedules import router as schedules_router
+
+app.include_router(schedules_router)

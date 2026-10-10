@@ -1,36 +1,56 @@
-# Progress Tracker
-
 ## Current Spec
 
-**Spec 05 — Schedule Interface** is implemented with temporary client-side mock data. Schedule operations are not connected to FastAPI or MySQL and reset when the page reloads.
+**Spec 07 - Connect Schedule UI to API** is implemented. The schedule workspace now loads persisted schedules and uses the authenticated API for details, create, update, and cancel operations. UI success states follow confirmed API responses.
 
 ### Scope and implementation
 
-- Added protected `/schedules` route using the existing Clerk `auth.protect()` pattern.
-- Built responsive upcoming schedule list and detail panel, create/edit form, and cancel confirmation. Form fields follow Spec 04 create/update schemas; frontend validates required values and nonnegative durations.
-- Included loading, empty, success, validation error, and cancellation states. The interface labels mock schedules and explains that no changes are persisted. It does not calculate departure/wake-up times or implement notifications.
-- Added a root `.pytest_cache/**` ESLint ignore after `npm run lint` failed to scan the inaccessible cache directory. Added `instant = false` to the protected page to follow the existing dashboard convention and support this app's Cache Components prerendering.
+- Added `lib/schedule-api.ts` for Bearer-authenticated schedule API calls, runtime response validation, and safe messages for validation, session, missing-record, server, and network errors.
+- Replaced the schedule mock fixtures and local-only mutations with API requests. Loading, API failure, empty, success, save, and cancel states reflect server responses; failed requests do not update local schedule data or report success.
+- Date/time input is converted using the selected IANA timezone to an offset-aware instant; nonexistent local times are rejected. The timezone selector lists browser-supported IANA zones with current GMT offsets and defaults to Asia/Manila. No departure or wake-up calculations were added.
+- Follow-up timezone fix: request datetimes are normalized to UTC before persistence, and responses serialize naive MySQL DATETIME values as explicit UTC. This corrects Manila 08:00 being returned as a timezone-less midnight value; no schema migration was needed.
+- Expanded FastAPI CORS from GET-only to the required GET, POST, and PATCH methods. `FRONTEND_ORIGINS` remains an explicit allowlist; request headers remain limited to Accept, Authorization, and Content-Type; credentials remain disabled. Added preflight tests for the configured local origin and rejection of an untrusted origin.
+- No database schema, ownership enforcement, or authentication verification changes were made.
 
 ### Changed files
 
-- `app/schedules/page.tsx`
-- `app/schedules/schedule-workspace.tsx`
-- `eslint.config.mjs`
-- `context/progress-tracker.md`
+- `app/schedules/schedule-workspace.tsx` - loads and mutates schedules through the API, with server-confirmed UI state and a timezone selector.
+- `backend/schemas.py` - normalizes submitted timestamps to UTC and serializes stored UTC values with an explicit UTC marker.
+- `backend/tests/test_schedules.py` and `backend/tests/test_schedule_api.py` - cover timezone normalization and API timestamp round trips.
+- `lib/schedule-api.ts` - typed authenticated API client and response/error validation.
+- `backend/main.py` - allows only the API's required cross-origin methods for configured origins.
+- `backend/tests/test_health.py` - verifies allowed schedule preflight and rejected untrusted origin.
+- `context/progress-tracker.md` - records Spec 07 results and outstanding verification.
 
 ### Verification results
 
+- `python -m pytest -p no:cacheprovider` from `backend/`: **passed, 37 tests**.
 - `npm run lint`: **passed**.
 - `npx tsc --noEmit`: **passed**.
-- `npm run build`: **passed**; `/schedules` is server-rendered behind Clerk protection.
-- `git diff --check`: **passed**.
-- Interactive browser checks were not performed. Clerk access behavior, responsive rendering, and client-side create/edit/cancel flows are implemented but not manually verified in a browser. Empty state is supported by the component but the initial mock fixture is populated.
+- `npm run build`: **passed**; `/schedules` remains Clerk-protected and dynamically rendered.
+- A local interactive browser workflow was not verified: `npm run dev` exited with `spawn EPERM`; `npm run start` found port 3000 already in use, and browser discovery returned no available browser.
+- A Manila 08:00 create/read/update/cancel round trip passed against configured MySQL using a generated test Clerk key and an outer transaction rolled back after verification; no schedule row was retained. The response consistently returned the instant as 00:00Z, which displays as 08:00 in Asia/Manila. This verifies the database/API path, not a real Clerk browser session.
+- API preflight behavior is covered by backend tests. Production frontend-origin configuration and live browser CORS behavior remain deployment-specific and unverified. `git diff --check` passed.
 
 ### Next step
 
-Spec 05 is complete. Stop here; do not proceed to another spec without an explicit request.
+Spec 07 is complete. Stop here; proceed only to the next explicitly requested spec.
 
 ## Completed Specs
+
+### Spec 06 - Schedule API
+
+Implemented and verified with authenticated `POST`/`GET /schedules`, `GET`/`PATCH /schedules/{id}`, and `POST /schedules/{id}/cancel`. All reads and mutations are scoped to the verified Clerk subject; the owner is never accepted from the client. Missing and other-user records share the same 404 response. Mutations commit, refresh, and safely roll back on SQLAlchemy persistence failures.
+
+**Changed files:** `backend/main.py`, `backend/routers/schedules.py`, `backend/tests/test_schedule_api.py`, and this tracker.
+
+**Recorded verification:** backend suite passed with 34 tests at Spec 06 completion. API tests used signed test JWTs and isolated in-memory SQLite. MySQL was not modified or exercised for that spec. CORS allowed only GET at the time; Spec 07 expands this allowlist for schedule writes.
+
+### Spec 05 - Schedule Interface
+
+Implemented with temporary mock data. Added the protected `/schedules` interface with list/detail, create/edit forms, cancel confirmation, responsive layouts, loading/empty/success/error states, and client-side field validation. Mock changes were explicitly described as temporary and did not persist. The interface was not connected to the API during Spec 05.
+
+**Recorded verification:** `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed. Interactive browser flows were not verified; the initial fixture was populated, so the empty state was not manually checked.
+
 
 ### Spec 04 — Schedule Data Model
 

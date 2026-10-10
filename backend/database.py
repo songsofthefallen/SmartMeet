@@ -9,6 +9,9 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.engine import make_url
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class DatabaseConfigurationError(RuntimeError):
