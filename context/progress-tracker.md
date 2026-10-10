@@ -2,41 +2,56 @@
 
 ## Current Spec
 
-**Spec 03 — Database Foundation** is implemented and unit verified. Live MySQL connectivity has not been verified because no configured MySQL instance was used.
+**Spec 04 — Schedule Data Model** is implemented and verified. The initial migration was applied to the configured MySQL database, and Alembic reports no metadata differences.
 
 ### Scope and implementation
 
-- Added `backend/database.py` with lazy, process-reused SQLAlchemy engine (`pool_pre_ping=True`), reusable session factory, FastAPI `get_db` dependency that closes each session, and a `SELECT 1` connectivity check.
-- Reads `DATABASE_URL` from the backend environment and validates that it is a complete `mysql+pymysql` URL. Missing or malformed configuration produces a clear, credential-safe configuration error; the request dependency returns a generic 503 response.
-- Added SQLAlchemy 2.x and PyMySQL requirements, a placeholder database URL in `backend/.env.example`, and setup notes in `README.md`.
-- Preserved Clerk authentication and the existing `GET /health` response. No schedule models, tables, migrations, CRUD endpoints, or frontend database features were added.
+- Added `backend/models.py` with SQLAlchemy 2.x declarative metadata, a Clerk-owned `Schedule` table, enum values, nonnegative duration constraints, user/status indexes, and timestamps. No users table was introduced.
+- Added `backend/schemas.py` with create, partial update, and ORM response schemas. Inputs reject extra fields, invalid enum values, negative durations, naive datetimes, and invalid IANA timezones. The create contract does not accept a Clerk user ID; the authenticated service must supply ownership from trusted identity.
+- Added `backend/alembic.ini`, `backend/alembic/env.py`, the migration template, and initial revision `20261010_0001`. Alembic imports `Base.metadata` and reads the same `DATABASE_URL` through the Spec 03 validator; it loads ignored `backend/.env` for its CLI.
+- Added Alembic, Pydantic, and python-dotenv requirements. Documented migration commands and MySQL datetime behavior in `README.md`.
+- Existing Spec 03 `database.py`, Clerk authentication, and `/health` behavior were not modified. No CRUD endpoints, calculations, frontend behavior, or notifications were added.
 
 ### Changed files
 
-- `backend/database.py`
+- `backend/models.py`
+- `backend/schemas.py`
+- `backend/alembic.ini`
+- `backend/alembic/env.py`
+- `backend/alembic/script.py.mako`
+- `backend/alembic/versions/20261010_0001_create_schedules.py`
+- `backend/tests/test_schedules.py`
 - `backend/requirements.txt`
-- `backend/.env.example`
-- `backend/tests/test_database.py`
 - `README.md`
 - `context/progress-tracker.md`
 
 ### Verification results
 
-- `python -m pytest -p no:cacheprovider tests` from `backend/`: **passed, 21 tests** (9 database tests and 12 existing authentication/health tests).
-- Database tests use in-memory SQLite for the connectivity query and session lifecycle; they do not require MySQL.
-- `git diff --check`: no whitespace errors; Git reported line-ending conversion notices for edited text files.
-- Live MySQL connectivity: **not verified**. No MySQL integration result is claimed.
+- `python -m pytest -p no:cacheprovider tests` from `backend/`: **passed, 26 tests**, including model/schema tests and the existing database, authentication, and health tests.
+- Schedule model persistence tests use in-memory SQLite and are unit checks only; the live MySQL result below is separately verified.
+- `python -m alembic upgrade head`: **applied successfully** to configured MySQL. The database had no prior `schedules` or `alembic_version` table; the migration created the schedule table and version table without deleting or resetting existing data.
+- `python -m alembic current`: **20261010_0001 (head)**.
+- `python -m alembic check`: **passed; no new upgrade operations detected** against live MySQL metadata.
+- MySQL inspection confirmed all 14 expected schedule columns, two indexes, and four check constraints. `SHOW CREATE TABLE schedules` confirmed the resulting MySQL DDL.
+- `python -m alembic upgrade head --sql`: generated MySQL-dialect SQL successfully. This was a supplementary compile check, not used as proof of a live migration.
+- `git diff --check`: no whitespace errors; Git emitted line-ending conversion notices for edited text files.
 - Frontend checks: **not run**, because no frontend files or behavior changed.
 
 ### Environment and manual verification
 
-Set `DATABASE_URL` in ignored `backend/.env`, using the form `mysql+pymysql://user:password@host:3306/database`. Create the MySQL database and grant an application account access before use. URL-encode reserved characters in credentials. Call `check_database_connection()` in the backend environment to verify the live connection.
+For another environment, set `DATABASE_URL` in ignored `backend/.env`, using `mysql+pymysql://user:password@host:3306/database`; create the database and grant the application account access first, and URL-encode reserved characters in credentials. Install `backend/requirements.txt`, then run `python -m alembic upgrade head` from `backend/`. MySQL `DATETIME` does not preserve offsets: submit aware datetimes and store UTC instants alongside the IANA timezone field. Migration behavior has been verified on the currently configured MySQL instance; behavior on other MySQL versions/configurations remains unverified.
 
 ### Next step
 
-Verify against a configured local MySQL instance. Do not begin a later feature spec until it is explicitly requested.
+Spec 04 is complete. Proceed to a later feature spec only when explicitly requested.
 
 ## Completed Specs
+
+### Spec 03 — Database Foundation
+
+**Implemented and unit verified; live MySQL connectivity and migration were not part of its original verification.** Added `backend/database.py` with a lazy reused SQLAlchemy engine (`pool_pre_ping=True`), session factory, FastAPI `get_db` dependency, and safe `SELECT 1` connectivity check. It validates `DATABASE_URL` as a complete `mysql+pymysql` URL and returns credential-safe configuration errors. Added SQLAlchemy/PyMySQL, a placeholder in `backend/.env.example`, database tests, and initial setup notes in `README.md`.
+
+**Recorded checks at completion:** backend tests passed (21 tests); SQLite was used for connectivity/session lifecycle tests, so MySQL was not verified then. Spec 04 subsequently verified connectivity and applied its migration on the configured MySQL database.
 
 ### Spec 01 — Local Foundation and Health Check
 
@@ -68,7 +83,6 @@ Verify against a configured local MySQL instance. Do not begin a later feature s
 ## Open Verification Items
 
 - Configure a Clerk instance and manually verify registration, sign-in, dashboard identity, and sign-out in a browser.
-- Configure MySQL and verify a live connection using `check_database_connection()`.
 - Browser verification of frontend connected/unavailable states was previously recorded, but can be repeated when the development environment changes.
 
 ## Tracker Maintenance Rule
