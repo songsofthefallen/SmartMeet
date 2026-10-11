@@ -25,7 +25,9 @@ from routers.extraction import get_extraction_service
 
 
 @pytest.fixture
-def api_db() -> Generator[None, None, None]:
+def api_db(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    monkeypatch.setenv("TRAVEL_BUFFER_MINUTES", "0")
+    monkeypatch.setenv("PREPARATION_BUFFER_MINUTES", "0")
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -145,6 +147,8 @@ def test_schedule_crud_and_cancel(api_db: None, signing_key: str) -> None:
     assert created.json()["clerk_user_id"] == "user_alpha"
     assert created.json()["status"] == "active"
     assert created.json()["target_datetime"] == "2026-10-10T23:00:00Z"
+    assert created.json()["calculated_departure_time"] == "2026-10-10T22:40:00Z"
+    assert created.json()["calculated_wake_time"] == "2026-10-10T22:10:00Z"
 
     listing = client.get("/schedules", headers=headers)
     assert listing.status_code == 200
@@ -157,9 +161,34 @@ def test_schedule_crud_and_cancel(api_db: None, signing_key: str) -> None:
     assert updated.status_code == 200
     assert updated.json()["title"] == "Updated class"
 
+    recalculated = client.patch(
+        f"/schedules/{schedule_id}", headers=headers,
+        json={"travel_duration_minutes": 40},
+    )
+    assert recalculated.json()["calculated_departure_time"] == "2026-10-10T22:20:00Z"
+
     cancelled = client.post(f"/schedules/{schedule_id}/cancel", headers=headers)
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+
+
+def test_manila_example_returns_utc_instants_that_display_as_630_and_530(
+    api_db: None, signing_key: str
+) -> None:
+    response = TestClient(app).post(
+        "/schedules",
+        headers=bearer(signing_key),
+        json=payload(
+            target_datetime="2026-10-12T08:00:00+08:00",
+            travel_duration_minutes=90,
+            preparation_duration_minutes=60,
+        ),
+    )
+    assert response.status_code == 201
+    result = response.json()
+    assert result["target_datetime"] == "2026-10-12T00:00:00Z"
+    assert result["calculated_departure_time"] == "2026-10-11T22:30:00Z"
+    assert result["calculated_wake_time"] == "2026-10-11T21:30:00Z"
 
 
 def test_schedule_routes_require_verified_authentication(api_db: None) -> None:
@@ -282,6 +311,12 @@ def test_api_persists_intent_and_unknown_durations(
     assert response.json()["time_intent"] == intent
     assert response.json()["preparation_duration_minutes"] is None
     assert response.json()["travel_duration_minutes"] is None
+    if intent == "arrival":
+        assert response.json()["calculated_departure_time"] is None
+        assert response.json()["departure_unavailable_reason"] == "Travel duration is unknown."
+    else:
+        assert response.json()["calculated_departure_time"] == "2026-10-10T23:00:00Z"
+        assert response.json()["wake_unavailable_reason"] == "Preparation duration is unknown."
 
 
 @pytest.mark.parametrize("method,path", [("get", "/schedules/987"), ("patch", "/schedules/987"), ("post", "/schedules/987/cancel")])

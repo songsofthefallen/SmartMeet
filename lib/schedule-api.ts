@@ -12,6 +12,8 @@ export type Schedule = {
   travel_duration_minutes: number | null;
   calculated_departure_time: string | null;
   calculated_wake_time: string | null;
+  departure_unavailable_reason: string | null;
+  wake_unavailable_reason: string | null;
   status: ScheduleStatus;
   created_at: string;
   updated_at: string;
@@ -78,6 +80,8 @@ function isSchedule(value: unknown): value is Schedule {
     (typeof value.travel_duration_minutes === "number" || value.travel_duration_minutes === null) &&
     (typeof value.calculated_departure_time === "string" || value.calculated_departure_time === null) &&
     (typeof value.calculated_wake_time === "string" || value.calculated_wake_time === null) &&
+    (typeof value.departure_unavailable_reason === "string" || value.departure_unavailable_reason === null) &&
+    (typeof value.wake_unavailable_reason === "string" || value.wake_unavailable_reason === null) &&
     (value.status === "active" || value.status === "cancelled" || value.status === "completed") &&
     typeof value.created_at === "string" &&
     typeof value.updated_at === "string"

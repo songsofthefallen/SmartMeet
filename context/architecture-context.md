@@ -116,6 +116,8 @@ For a departure-time event:
 - `departure_time = user_requested_departure_time`
 - `wake_time = departure_time - preparation_duration`
 
+Spec 10 confirms the initial configurable buffer semantics: subtract the nonnegative `TRAVEL_BUFFER_MINUTES` (default `0`) once for arrival calculations and the nonnegative `PREPARATION_BUFFER_MINUTES` (default `0`) once for preparation-start calculations. Unknown durations remain unavailable with an explicit reason. Calculations use UTC-backed instants and return schedule-local aware values for display.
+
 These are proposed starting formulas. Define the meaning of each buffer before implementation. Do not add a traffic/weather buffer twice if the routing provider's duration already accounts for it. If travel duration is unavailable, do not fabricate a precise departure estimate.
 
 ## Reliability and Security Invariants

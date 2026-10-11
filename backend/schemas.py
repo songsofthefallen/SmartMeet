@@ -94,6 +94,8 @@ class ScheduleResponse(BaseModel):
     travel_duration_minutes: int | None
     calculated_departure_time: datetime | None
     calculated_wake_time: datetime | None
+    departure_unavailable_reason: str | None = None
+    wake_unavailable_reason: str | None = None
     status: ScheduleStatus
     created_at: datetime
     updated_at: datetime

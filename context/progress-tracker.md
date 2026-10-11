@@ -1,4 +1,46 @@
-## Current Spec
+## Current Progress
+
+No active implementation step. Spec 10 is implemented and verified as recorded below; manual browser verification remains outstanding.
+
+## Completed Spec 10 - Deterministic Time Calculations
+
+### Spec 10 timezone response regression fix
+
+Root cause: the calculation service returned schedule-local aware datetimes, then SQLAlchemy refreshed MySQL `DATETIME` columns that do not preserve timezone metadata. On create/update responses, the schema interpreted the refreshed local wall time as UTC, and the frontend formatted that instant in the schedule timezone again. For Manila this produced an eight-hour late display. The service now keeps calculation results as UTC-aware instants through persistence and API serialization; the existing frontend formats those UTC instants once using the schedule IANA timezone. Naive values read back from the database continue to be interpreted as UTC, matching the established target-datetime storage contract. No manual offset or timezone-specific calculation was added.
+
+Regression coverage now verifies the October 12, 2026 8:00 AM Asia/Manila arrival example with 90-minute travel and 60-minute preparation durations: API UTC instants correspond to 6:30 AM and 5:30 AM local. Unit coverage also checks departure intent in Manila and Tokyo, crossing local midnight, and the existing DST transition arithmetic. API tests explicitly zero environment buffers so local `.env` settings do not affect expected values.
+
+Verification for the regression fix:
+
+- `python -m pytest -p no:cacheprovider` from `backend/`: **passed, 94 tests**.
+- Frontend helper tests: **passed, 3 tests total** (2 schedule extraction time tests and 1 clarification test).
+- `npm run lint`: **passed**.
+- `npx tsc --noEmit`: **passed**.
+- `npm run build`: **passed**.
+- `git diff --check`: **passed** (only expected LF-to-CRLF notices).
+- The UI formatting path was traced to `formatDate`, which applies the schedule timezone to API UTC instants. Browser behavior remains unverified; retest the same saved schedule in the browser.
+
+Implemented deterministic backend departure and wake-up/preparation-start calculations. Arrival intent subtracts a known travel duration and configured travel buffer; departure intent preserves the requested departure instant. Both intents subtract a known preparation duration and configured preparation buffer for the wake time. Buffers are nonnegative backend environment settings (`TRAVEL_BUFFER_MINUTES`, `PREPARATION_BUFFER_MINUTES`) defaulting to zero. Unknown durations remain null, with an API reason explaining why a result is unavailable. Calculation results are recalculated on create and relevant updates, and refreshed for reads; they use aware instants and serialize as UTC for the existing frontend to render in the schedule timezone. The existing calculated columns are reused; no migration was needed.
+
+### Changed files
+
+- `backend/time_calculation.py` - validated buffer settings, deterministic calculation service, and schedule recalculation.
+- `backend/routers/schedules.py`, `backend/schemas.py` - calculate on create/update/read and return unavailable reasons.
+- `backend/.env.example` - documents zero-default buffer settings.
+- `backend/tests/test_time_calculation.py`, `backend/tests/test_schedule_api.py` - calculation, timezone, unknown/zero duration, buffers, recalculation, serialization, and ownership coverage.
+- `lib/schedule-api.ts`, `app/schedules/schedule-workspace.tsx` - validate and display calculated suggestions and unavailable reasons in local timezone.
+- `context/decisions.md`, `context/architecture-context.md`, and this tracker - record confirmed buffer and calculation behavior.
+
+### Verification
+
+- `python -m pytest -p no:cacheprovider` from `backend/`: **passed, 92 tests**.
+- `npm run lint`: **passed**.
+- `npx tsc --noEmit`: **passed**.
+- `npm run build`: **passed**.
+- `git diff --check`: **passed** (Git reported expected LF-to-CRLF normalization notices).
+- No database migration was required. Database migration application and interactive browser rendering were not performed; the schedule display is covered by lint, TypeScript, build, and API payload tests.
+
+## Completed Spec 09 - Step 4: API and frontend integration
 
 **Spec 09 Step 4 - API and frontend integration** is implemented. Authenticated `POST /schedules/extract` reuses Clerk verification, generates its reference instant on the server, and accepts only a validated optional IANA timezone context. The workspace can request a draft, inspect extraction or clarification results, edit known values, answer partial date/time questions, and explicitly save through the existing schedule API. Manual create/edit remains available. Extraction and save submissions are guarded against duplicates; request failures preserve the natural-language input. AI settings are loaded from the backend `.env` at client construction using a path anchored to the provider module. Follow-up fixes add a title fallback, apply the selected timezone when the model omits one, require explicit confirmation for conflicting timezone output, and normalize a model time offset once against selected/model IANA zones before the existing resolver. The frontend now accepts only the normalized local-time wire value.
 

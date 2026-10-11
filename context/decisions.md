@@ -84,3 +84,9 @@
 - Context: The project is both a learning project and an application the user wants to use.
 - Decision: Build in small end-to-end slices and explain architecture tradeoffs as the system grows.
 - Tradeoffs: More deliberate than generating a large codebase all at once, but easier to understand, test, and maintain.
+
+## DEC-014 — Deterministic time calculation buffers
+- Status: Confirmed direction
+- Context: Suggested departure and preparation-start times must use explicit, testable rules, with no invented durations.
+- Decision: FastAPI calculates both recommendations from the stored target instant, time intent, known durations, and nonnegative `TRAVEL_BUFFER_MINUTES` / `PREPARATION_BUFFER_MINUTES` backend settings. Both buffers default to zero. A null duration remains unknown; unavailable calculations include a reason.
+- Tradeoffs: Operators can configure consistent buffers through backend environment settings; per-schedule buffer editing is not part of this spec.
