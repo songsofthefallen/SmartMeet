@@ -1,8 +1,9 @@
 "use client";
 
 import { useAuth, UserButton } from "@clerk/nextjs";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { scheduleApi, ScheduleApiError, type Schedule, type ScheduleInput, type ScheduleIntent } from "@/lib/schedule-api";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { scheduleApi, ScheduleApiError, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent } from "@/lib/schedule-api";
+import { localDateTimeFromExtraction, localTimeInputFromExtraction } from "@/lib/schedule-extraction-time";
 
 type FormValues = Omit<ScheduleInput, "target_datetime" | "time_intent" | "preparation_duration_minutes"> & { target_datetime: string; time_intent: ScheduleIntent | ""; preparation_duration_minutes: number | null };
 type Notice = { kind: "success" | "error"; text: string };
@@ -96,6 +97,53 @@ function messageFor(error: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
+function clarificationQuestions(review: ScheduleExtractionReview, selectedTimezone: string): string[] {
+  const questions: string[] = [];
+  const missingQuestions: Record<string, string> = {
+    title: "What should this schedule be called?",
+    time_intent: "Is this time for arriving or leaving?",
+    target_date_local: "What date should this schedule use?",
+    target_time_local: "What local time should this schedule use?",
+    timezone: "Which timezone should interpret the target time?",
+    schedule_request: "What event or plan should be scheduled?",
+  };
+  for (const field of review.missing_fields) {
+    if (missingQuestions[field]) questions.push(missingQuestions[field]);
+  }
+  if (review.ambiguous_fields.includes("time_intent") && !questions.includes(missingQuestions.time_intent)) {
+    questions.push(missingQuestions.time_intent);
+  }
+  if (review.ambiguous_fields.includes("target_time_local")) {
+    questions.push("This local time occurs twice. Choose a time outside the repeated hour.");
+  }
+  if (review.ambiguous_fields.includes("timezone")) {
+    const modelTimezone = review.extraction?.timezone;
+    questions.push(
+      `The model identified ${modelTimezone ?? "a different timezone"}, while you selected ${selectedTimezone}. Confirm or change the timezone before saving.`,
+    );
+  }
+  if (review.invalid_fields.includes("target_time_local")) {
+    questions.push("That local time does not exist in this timezone. Choose another time.");
+  }
+  if (review.invalid_fields.includes("target_time_offset")) {
+    questions.push("The extracted time offset does not match the selected timezone. Review the local time and timezone.");
+  }
+  if (review.invalid_fields.includes("target_date_local")) {
+    questions.push("The extracted date is invalid. Enter a valid date.");
+  }
+  if (review.invalid_fields.includes("model_output")) {
+    questions.push("The extracted response could not be validated. Retry extraction or enter the schedule manually.");
+  }
+  if (review.invalid_fields.includes("title")) questions.push("Enter a valid schedule title.");
+  if (review.invalid_fields.includes("time_intent")) questions.push("Select whether this is an arrival or departure time.");
+  if (review.invalid_fields.includes("timezone")) questions.push("Select a valid timezone for this schedule.");
+  if (review.invalid_fields.some((field) => !["model_output", "title", "time_intent", "timezone", "target_date_local", "target_time_local", "target_time_offset"].includes(field))) {
+    questions.push("Some extracted values could not be validated. Review and correct the schedule fields below.");
+  }
+  questions.push(...(review.extraction?.ambiguities ?? []));
+  return [...new Set(questions)];
+}
+
 export default function ScheduleWorkspace() {
   const { getToken, isLoaded } = useAuth();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -104,6 +152,15 @@ export default function ScheduleWorkspace() {
   const [view, setView] = useState<"list" | "detail" | "form">("list");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<FormValues>(blankForm);
+  const [extractionText, setExtractionText] = useState("");
+  const [extractionReview, setExtractionReview] = useState<ScheduleExtractionReview | null>(null);
+  const [extractionError, setExtractionError] = useState<string | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractionDate, setExtractionDate] = useState("");
+  const [extractionTime, setExtractionTime] = useState("");
+  const [timezoneConflictConfirmed, setTimezoneConflictConfirmed] = useState(false);
+  const extractionInFlight = useRef(false);
+  const saveInFlight = useRef(false);
   const [message, setMessage] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -151,6 +208,12 @@ export default function ScheduleWorkspace() {
     setForm(blankForm());
     setMessage(null);
     setConfirmCancel(false);
+    setExtractionText("");
+    setExtractionReview(null);
+    setExtractionError(null);
+    setExtractionDate("");
+    setExtractionTime("");
+    setTimezoneConflictConfirmed(false);
     setView("form");
   }
 
@@ -166,7 +229,70 @@ export default function ScheduleWorkspace() {
       travel_duration_minutes: item.travel_duration_minutes,
     });
     setMessage(null);
+    setExtractionText("");
+    setExtractionReview(null);
+    setExtractionError(null);
+    setExtractionDate("");
+    setExtractionTime("");
+    setTimezoneConflictConfirmed(false);
     setView("form");
+  }
+
+  async function extractSchedule() {
+    if (extractionInFlight.current || saveInFlight.current || !extractionText.trim() || saving) return;
+    extractionInFlight.current = true;
+    setExtracting(true);
+    setExtractionError(null);
+    setExtractionReview(null);
+    setMessage(null);
+    try {
+      const token = await getToken();
+      const selectedTimezone = form.timezone.trim();
+      const review = await scheduleApi.extract(extractionText, selectedTimezone || null, token);
+      setExtractionReview(review);
+      setTimezoneConflictConfirmed(!review.ambiguous_fields.includes("timezone"));
+      const extracted = review.extraction;
+      if (extracted) {
+        const completeTarget = localDateTimeFromExtraction(extracted.target_date_local, extracted.target_time_local);
+        const currentParts = form.target_datetime.split("T");
+        const nextDate = extracted.target_date_local ?? currentParts[0] ?? "";
+        const nextTime = localTimeInputFromExtraction(extracted.target_time_local) ?? currentParts[1] ?? "";
+        setExtractionDate(nextDate);
+        setExtractionTime(nextTime);
+        setForm((current) => ({
+          ...current,
+          title: extracted.title ?? current.title,
+          description: current.description?.trim() ? current.description : extractionText.trim(),
+          time_intent: extracted.time_intent ?? current.time_intent,
+          target_datetime: completeTarget ?? current.target_datetime,
+          timezone: selectedTimezone || extracted.timezone || current.timezone,
+          preparation_duration_minutes: extracted.preparation_duration_minutes ?? current.preparation_duration_minutes,
+          travel_duration_minutes: extracted.travel_duration_minutes ?? current.travel_duration_minutes,
+        }));
+      } else {
+        setExtractionDate("");
+        setExtractionTime("");
+      }
+    } catch (error) {
+      setExtractionError(messageFor(error));
+    } finally {
+      extractionInFlight.current = false;
+      setExtracting(false);
+    }
+  }
+
+  function updateExtractionDate(value: string) {
+    setExtractionDate(value);
+    if (value && extractionTime) {
+      setForm((current) => ({ ...current, target_datetime: `${value}T${extractionTime.slice(0, 5)}` }));
+    }
+  }
+
+  function updateExtractionTime(value: string) {
+    setExtractionTime(value);
+    if (extractionDate && value) {
+      setForm((current) => ({ ...current, target_datetime: `${extractionDate}T${value.slice(0, 5)}` }));
+    }
   }
 
   async function selectSchedule(item: Schedule) {
@@ -195,7 +321,12 @@ export default function ScheduleWorkspace() {
 
   async function saveSchedule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (saveInFlight.current || extractionInFlight.current || saving || extracting) return;
     setMessage(null);
+    if (extractionReview?.ambiguous_fields.includes("timezone") && !timezoneConflictConfirmed) {
+      setMessage({ kind: "error", text: "Confirm which timezone should interpret this local time before saving." });
+      return;
+    }
     let targetDateTime: string;
     try {
       if (!form.time_intent) throw new Error("Choose whether this schedule is for arriving by a time or leaving at a time.");
@@ -217,6 +348,7 @@ export default function ScheduleWorkspace() {
       timezone: form.timezone.trim(),
       target_datetime: targetDateTime,
     };
+    saveInFlight.current = true;
     setSaving(true);
     try {
       const token = await getToken();
@@ -236,12 +368,14 @@ export default function ScheduleWorkspace() {
     } catch (error) {
       setMessage({ kind: "error", text: messageFor(error) });
     } finally {
+      saveInFlight.current = false;
       setSaving(false);
     }
   }
 
   async function cancelSchedule() {
-    if (!selectedSchedule) return;
+    if (!selectedSchedule || saveInFlight.current) return;
+    saveInFlight.current = true;
     setSaving(true);
     setMessage(null);
     try {
@@ -255,11 +389,22 @@ export default function ScheduleWorkspace() {
     } catch (error) {
       setMessage({ kind: "error", text: messageFor(error) });
     } finally {
+      saveInFlight.current = false;
       setSaving(false);
     }
   }
 
   const selected = selectedId === selectedSchedule?.id ? selectedSchedule : null;
+  const extractionQuestions = extractionReview ? clarificationQuestions(extractionReview, form.timezone) : [];
+  const showSplitTargetInputs = Boolean(
+    extractionReview?.status === "needs_clarification" &&
+      extractionReview.extraction &&
+      (extractionReview.missing_fields.includes("target_date_local") ||
+        extractionReview.missing_fields.includes("target_time_local") ||
+        extractionReview.ambiguous_fields.includes("target_time_local") ||
+        extractionReview.invalid_fields.includes("target_time_local") ||
+        extractionReview.invalid_fields.includes("target_time_offset")),
+  );
 
   return (
     <main className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
@@ -287,11 +432,34 @@ export default function ScheduleWorkspace() {
 
           <section aria-label={view === "form" ? (editingId ? "Edit schedule" : "Create schedule") : "Schedule details"} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
             {view === "form" ? <form onSubmit={(event) => void saveSchedule(event)} className="p-5 sm:p-6"><div className="mb-6 flex items-start justify-between"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">{editingId ? "EDIT SCHEDULE" : "NEW SCHEDULE"}</p><h2 className="mt-1 text-xl font-bold">{editingId ? "Update your plan" : "Create a schedule"}</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Changes are saved to your account after the API confirms them.</p></div><button type="button" className="rounded-lg p-2 text-[var(--text-muted)] hover:bg-[var(--surface-hover)]" aria-label="Close form" onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>×</button></div>
-              <div className="space-y-4"><label className="block text-sm font-medium">Title <span className="text-[var(--state-error)]">*</span><input className={fieldClass} required maxLength={200} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Team planning meeting" /></label><label className="block text-sm font-medium">Description <span className="font-normal text-[var(--text-muted)]">(optional)</span><textarea className={fieldClass} rows={3} maxLength={4000} value={form.description ?? ""} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Add notes for this schedule" /></label>
-                <label className="block text-sm font-medium">Target date and time <span className="text-[var(--state-error)]">*</span><input className={fieldClass} type="datetime-local" required value={form.target_datetime} onChange={(e) => setForm({ ...form, target_datetime: e.target.value })} /></label>
-                <div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-medium">Time intent <span className="text-[var(--state-error)]">*</span><select className={fieldClass} required value={form.time_intent} onChange={(e) => setForm({ ...form, time_intent: e.target.value as ScheduleIntent | "" })}><option value="" disabled>Select arrival or departure</option><option value="arrival">Arrive by</option><option value="departure">Leave at</option></select></label><label className="block text-sm font-medium">Timezone<select className={fieldClass} required value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })}>{Array.from(new Set([form.timezone, ...supportedTimeZones])).sort().map((timezone) => <option key={timezone} value={timezone}>{timezoneLabel(timezone)}</option>)}</select><span className="mt-1 block text-xs font-normal text-[var(--text-muted)]">The target time is interpreted in this timezone.</span></label></div>
+              <div className="space-y-4">
+                {!editingId && <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)] p-4" aria-labelledby="natural-language-heading">
+                  <h3 id="natural-language-heading" className="font-semibold">Describe your schedule</h3>
+                  <p className="mt-1 text-sm text-[var(--text-muted)]">AI will prepare a draft using the selected timezone. Review every field before saving.</p>
+                  <textarea className={fieldClass} rows={3} maxLength={4000} value={extractionText} onChange={(event) => { setExtractionText(event.target.value); setExtractionReview(null); setExtractionError(null); }} placeholder="e.g. I need to arrive at school tomorrow at 7" aria-label="Schedule description for extraction" />
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">Timezone context: {form.timezone ? timezoneLabel(form.timezone) : "not selected"}</p>
+                  <button type="button" className={`${secondaryButton} mt-3`} onClick={() => void extractSchedule()} disabled={extracting || saving || !extractionText.trim()}>
+                    {extracting ? "Extracting..." : extractionReview || extractionError ? "Retry extraction" : "Extract draft"}
+                  </button>
+                  {extracting && <p className="mt-2 text-sm text-[var(--text-muted)]" role="status">Preparing a draft. Your text remains here if the request fails.</p>}
+                  {extractionError && <div className="mt-3 rounded-lg border border-[var(--state-error)]/20 bg-[var(--state-error-bg)] px-3 py-2 text-sm text-[var(--state-error)]" role="alert">{extractionError} Your description is preserved; retry or continue manually.</div>}
+                  {extractionReview && <div className={`mt-3 rounded-lg border px-3 py-3 text-sm ${extractionReview.status === "ready_for_review" ? "border-[var(--state-success)]/20 bg-[var(--state-success-bg)] text-[var(--state-success)]" : "border-[var(--state-warning)]/25 bg-[var(--state-warning-bg)] text-[var(--state-warning)]"}`} role="status">
+                    <p className="font-semibold">{extractionReview.status === "ready_for_review" ? "Draft ready for your review" : "More information is needed"}</p>
+                    {extractionQuestions.length > 0 && <ul className="mt-2 list-disc space-y-1 pl-5">{extractionQuestions.map((question, index) => <li key={`${question}-${index}`}>{question}</li>)}</ul>}
+                    {extractionReview.ambiguous_fields.includes("timezone") && <label className="mt-3 flex items-start gap-2"><input type="checkbox" checked={timezoneConflictConfirmed} onChange={(event) => setTimezoneConflictConfirmed(event.target.checked)} /><span>I confirm that {form.timezone} should interpret the target time.</span></label>}
+                    {extractionReview.extraction && <p className="mt-2 text-xs">Known values are filled into the editable form. Nothing has been saved.</p>}
+                    {!extractionReview.extraction && <p className="mt-2 text-xs">Retry extraction or complete the form manually. Nothing has been saved.</p>}
+                  </div>}
+                </section>}
+                <label className="block text-sm font-medium">Title <span className="text-[var(--state-error)]">*</span><input className={fieldClass} required maxLength={200} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Team planning meeting" /></label><label className="block text-sm font-medium">Description <span className="font-normal text-[var(--text-muted)]">(optional)</span><textarea className={fieldClass} rows={3} maxLength={4000} value={form.description ?? ""} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Add notes for this schedule" /></label>
+                {showSplitTargetInputs ? <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="block text-sm font-medium">Target date <span className="text-[var(--state-error)]">*</span><input className={fieldClass} type="date" required value={extractionDate} onChange={(event) => updateExtractionDate(event.target.value)} /></label>
+                  <label className="block text-sm font-medium">Target local time <span className="text-[var(--state-error)]">*</span><input className={fieldClass} type="time" required value={extractionTime} onChange={(event) => updateExtractionTime(event.target.value)} /></label>
+                  <p className="text-xs text-[var(--text-muted)] sm:col-span-2">The date and time use the selected timezone and will be checked for daylight-saving gaps or repeats before saving.</p>
+                </div> : <label className="block text-sm font-medium">Target date and time <span className="text-[var(--state-error)]">*</span><input className={fieldClass} type="datetime-local" required value={form.target_datetime} onChange={(e) => setForm({ ...form, target_datetime: e.target.value })} /></label>}
+                <div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-medium">Time intent <span className="text-[var(--state-error)]">*</span><select className={fieldClass} required value={form.time_intent} onChange={(e) => setForm({ ...form, time_intent: e.target.value as ScheduleIntent | "" })}><option value="" disabled>Select arrival or departure</option><option value="arrival">Arrive by</option><option value="departure">Leave at</option></select></label><label className="block text-sm font-medium">Timezone<select className={fieldClass} required value={form.timezone} onChange={(e) => { setForm({ ...form, timezone: e.target.value }); setTimezoneConflictConfirmed(false); }}>{Array.from(new Set([form.timezone, ...supportedTimeZones])).sort().map((timezone) => <option key={timezone} value={timezone}>{timezoneLabel(timezone)}</option>)}</select><span className="mt-1 block text-xs font-normal text-[var(--text-muted)]">The target time is interpreted in this timezone.</span></label></div>
                 <div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-medium">Preparation <span className="font-normal text-[var(--text-muted)]">(optional, minutes)</span><input className={fieldClass} type="number" min="0" step="1" value={form.preparation_duration_minutes ?? ""} onChange={(e) => setForm({ ...form, preparation_duration_minutes: e.target.value === "" ? null : Number(e.target.value) })} /></label><label className="block text-sm font-medium">Travel duration <span className="font-normal text-[var(--text-muted)]">(optional, minutes)</span><input className={fieldClass} type="number" min="0" step="1" value={form.travel_duration_minutes ?? ""} onChange={(e) => setForm({ ...form, travel_duration_minutes: e.target.value === "" ? null : Number(e.target.value) })} /></label></div>
-              </div><div className="mt-6 flex flex-col-reverse gap-3 border-t border-[var(--border)] pt-5 sm:flex-row sm:justify-end"><button type="button" className={secondaryButton} disabled={saving} onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>Discard</button><button type="submit" className={primaryButton} disabled={saving}>{saving ? "Saving..." : <><CheckIcon /> {editingId ? "Save changes" : "Add schedule"}</>}</button></div></form> : selected ? <div className="p-5 sm:p-6"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">SCHEDULE DETAILS</p><h2 className="mt-1 text-xl font-bold leading-snug">{selected.title}</h2></div><span className={`rounded-lg px-2.5 py-1 text-xs font-semibold capitalize ${selected.status === "active" ? "bg-[var(--state-success-bg)] text-[var(--state-success)]" : "bg-[var(--surface-secondary)] text-[var(--text-secondary)]"}`}>{selected.status}</span></div>
+              </div><div className="mt-6 flex flex-col-reverse gap-3 border-t border-[var(--border)] pt-5 sm:flex-row sm:justify-end"><button type="button" className={secondaryButton} disabled={saving || extracting} onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>Discard</button><button type="submit" className={primaryButton} disabled={saving || extracting}>{saving ? "Saving..." : <><CheckIcon /> {editingId ? "Save changes" : extractionReview?.extraction ? "Save reviewed schedule" : "Add schedule"}</>}</button></div></form> : selected ? <div className="p-5 sm:p-6"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">SCHEDULE DETAILS</p><h2 className="mt-1 text-xl font-bold leading-snug">{selected.title}</h2></div><span className={`rounded-lg px-2.5 py-1 text-xs font-semibold capitalize ${selected.status === "active" ? "bg-[var(--state-success-bg)] text-[var(--state-success)]" : "bg-[var(--surface-secondary)] text-[var(--text-secondary)]"}`}>{selected.status}</span></div>
               {detailLoading ? <p className="mt-4 text-sm text-[var(--text-muted)]" role="status">Refreshing schedule details...</p> : null}
               <div className="mt-6 rounded-xl bg-[var(--surface-secondary)] p-4"><p className="flex items-center gap-2 text-sm font-medium text-[var(--text-muted)]"><CalendarIcon /> Target {selected.time_intent}</p><p className="mt-2 text-lg font-semibold tabular-nums">{formatDate(selected.target_datetime, selected.timezone)}</p><p className="mt-1 text-sm text-[var(--text-muted)]">{selected.timezone}</p></div>
               <dl className="mt-5 divide-y divide-[var(--border)]"><DetailRow label="Time intent" value={selected.time_intent === "arrival" ? "Arrive by" : "Leave at"} /><DetailRow label="Preparation" value={selected.preparation_duration_minutes === null ? "Not provided" : `${selected.preparation_duration_minutes} minutes`} /><DetailRow label="Travel duration" value={selected.travel_duration_minutes === null ? "Unknown" : `${selected.travel_duration_minutes} minutes`} /><DetailRow label="Description" value={selected.description || "No additional notes"} /></dl>

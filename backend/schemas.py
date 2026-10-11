@@ -2,11 +2,11 @@
 
 from datetime import datetime, timezone
 from typing import Annotated
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_serializer, field_validator, model_validator
 
 from models import ScheduleStatus, TimeIntent
+from timezone_utils import get_iana_timezone
 
 
 def _require_aware(value: datetime) -> datetime:
@@ -16,10 +16,7 @@ def _require_aware(value: datetime) -> datetime:
 
 
 def _require_timezone(value: str) -> str:
-    try:
-        ZoneInfo(value)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError("timezone must be a valid IANA timezone") from exc
+    get_iana_timezone(value)
     return value
 
 

@@ -27,6 +27,28 @@ export type ScheduleInput = {
   travel_duration_minutes: number | null;
 };
 
+export type ScheduleExtraction = {
+  is_schedule_request: boolean;
+  title: string | null;
+  time_intent: ScheduleIntent | null;
+  target_date_local: string | null;
+  target_time_local: string | null;
+  timezone: string | null;
+  preparation_duration_minutes: number | null;
+  travel_duration_minutes: number | null;
+  time_intent_ambiguous: boolean;
+  ambiguities: string[];
+};
+
+export type ScheduleExtractionReview = {
+  status: "ready_for_review" | "needs_clarification";
+  extraction: ScheduleExtraction | null;
+  resolved_target_datetime: string | null;
+  missing_fields: string[];
+  ambiguous_fields: string[];
+  invalid_fields: string[];
+};
+
 export class ScheduleApiError extends Error {
   constructor(
     message: string,
@@ -59,6 +81,42 @@ function isSchedule(value: unknown): value is Schedule {
     (value.status === "active" || value.status === "cancelled" || value.status === "completed") &&
     typeof value.created_at === "string" &&
     typeof value.updated_at === "string"
+  );
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return typeof value === "string" || value === null;
+}
+
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isScheduleExtraction(value: unknown): value is ScheduleExtraction {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.is_schedule_request === "boolean" &&
+    isNullableString(value.title) &&
+    (value.time_intent === "arrival" || value.time_intent === "departure" || value.time_intent === null) &&
+    isNullableString(value.target_date_local) &&
+    isNullableString(value.target_time_local) &&
+    isNullableString(value.timezone) &&
+    (typeof value.preparation_duration_minutes === "number" || value.preparation_duration_minutes === null) &&
+    (typeof value.travel_duration_minutes === "number" || value.travel_duration_minutes === null) &&
+    typeof value.time_intent_ambiguous === "boolean" &&
+    isStringList(value.ambiguities)
+  );
+}
+
+function isScheduleExtractionReview(value: unknown): value is ScheduleExtractionReview {
+  if (!isRecord(value)) return false;
+  return (
+    (value.status === "ready_for_review" || value.status === "needs_clarification") &&
+    (value.extraction === null || isScheduleExtraction(value.extraction)) &&
+    isNullableString(value.resolved_target_datetime) &&
+    isStringList(value.missing_fields) &&
+    isStringList(value.ambiguous_fields) &&
+    isStringList(value.invalid_fields)
   );
 }
 
@@ -122,6 +180,15 @@ function isScheduleList(value: unknown): value is Schedule[] {
 }
 
 export const scheduleApi = {
+  extract(text: string, timezone: string | null, token: string | null) {
+    return request<ScheduleExtractionReview>(
+      "/schedules/extract",
+      token,
+      "POST",
+      { text, timezone },
+      isScheduleExtractionReview,
+    );
+  },
   list(token: string | null) {
     return request<Schedule[]>("/schedules", token, "GET", undefined, isScheduleList);
   },

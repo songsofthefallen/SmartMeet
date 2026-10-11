@@ -1,5 +1,89 @@
 ## Current Spec
 
+**Spec 09 Step 4 - API and frontend integration** is implemented. Authenticated `POST /schedules/extract` reuses Clerk verification, generates its reference instant on the server, and accepts only a validated optional IANA timezone context. The workspace can request a draft, inspect extraction or clarification results, edit known values, answer partial date/time questions, and explicitly save through the existing schedule API. Manual create/edit remains available. Extraction and save submissions are guarded against duplicates; request failures preserve the natural-language input. AI settings are loaded from the backend `.env` at client construction using a path anchored to the provider module. Follow-up fixes add a title fallback, apply the selected timezone when the model omits one, require explicit confirmation for conflicting timezone output, and normalize a model time offset once against selected/model IANA zones before the existing resolver. The frontend now accepts only the normalized local-time wire value.
+
+### Changed files
+
+- `backend/routers/extraction.py` - authenticated extraction endpoint, server reference time, safe configuration/provider errors.
+- `backend/ai_provider.py` - loads backend AI configuration at client construction from an explicit path.
+- `backend/extraction_schemas.py` and `backend/extraction_service.py` - accept offset-bearing model times only long enough to verify the offset against selected/model IANA timezone context, then normalize once; conflicting zones/offsets require clarification. Missing titles receive `Go to <destination>` when a destination is recognized, otherwise `New schedule`.
+- `backend/main.py` - registers the extraction route before schedule ID routes.
+- `backend/tests/test_schedule_api.py` - extraction endpoint auth, ready/clarification response, validation, and error tests.
+- `backend/tests/test_ai_provider.py` - regression coverage for backend `.env` loading when process working directory differs.
+- `backend/tests/test_extraction_service.py` - title/timezone defaults, matching `Asia/Manila` offset normalization, explicit timezone conflict, mismatched offset, and preservation of other fields.
+- `lib/schedule-api.ts` - extraction request/response types and runtime response validation.
+- `app/schedules/schedule-workspace.tsx` - natural-language input, result/clarification display, editable candidate fields, explicit confirmation for timezone conflicts, retry, and confirmed save.
+- `lib/schedule-extraction-time.ts` and `lib/schedule-extraction-time.test.ts` - accept normalized local wall times and refuse to strip a provider offset a second time; the two unit tests cover this helper only, not the React workspace.
+- `context/progress-tracker.md` - this Step 4 result.
+
+### Verification
+
+- `python -m pytest -p no:cacheprovider` from `backend/`: **passed, 83 tests**.
+- `node --experimental-strip-types lib/schedule-extraction-time.test.ts`: **passed, 2 tests**.
+- `npm run lint`: **passed**.
+- `npx tsc --noEmit`: **passed**.
+- `npm run build`: **passed** (Next.js production build).
+- `git diff --check`: **passed** (Git emitted LF-to-CRLF normalization notices only).
+- Automated checks passed as recorded above. Live OpenRouter extraction with the configured model and interactive browser end-to-end verification remain pending. A provider response captured during earlier diagnosis was used as a fixture, not as end-to-end verification. No database changes, migrations, or schedule calculations were performed.
+
+### Remaining Step 4 verification
+
+- Verify a live extraction using the configured OpenRouter model, then manually verify the extraction and correction flow in a browser, including provider retry, timezone-conflict confirmation, and date/time clarification.
+
+## Completed Spec 09 - Step 3: Date/time resolution and clarification readiness
+
+**Spec 09 Step 3 - Date/time resolution and clarification readiness** is implemented with mocked coverage. Relative dates are requested using the explicit reference instant and local date/time in the trusted IANA timezone when supplied. Candidate local date/time values are resolved to UTC using shared backend timezone validation and round-trip checks that reject DST gaps and flag repeated times. The service returns a structured ready-for-review or needs-clarification result, with separate missing, ambiguous, and invalid field lists. Provider output schema failures are surfaced as invalid fields; provider availability failures remain safe service errors.
+
+### Changed files
+
+- `backend/timezone_utils.py` - shared IANA timezone validation and DST-aware local datetime resolver.
+- `backend/schemas.py` - reuses the shared IANA timezone validator.
+- `backend/extraction_schemas.py` - structured review status/result.
+- `backend/extraction_service.py` - temporal resolution and clarification classification.
+- `backend/ai_provider.py` - identifies schema-invalid output separately from provider failures.
+- `backend/tests/test_extraction_service.py` - relative dates, missing timezone, invalid dates, DST gaps/folds, and clarification cases.
+- `context/progress-tracker.md` - this Step 3 result.
+
+### Verification
+
+- `python -m pytest -p no:cacheprovider` from `backend/`: **passed, 72 tests** at Step 3 completion.
+- `git diff --check`: **passed** at Step 3 completion (Git emitted expected LF-to-CRLF normalization notices).
+- No live AI provider call, frontend change, public API endpoint, database migration, or schedule calculation was performed.
+
+### Remaining Step 3 limitations
+
+- Relative language is interpreted by the model using the supplied trusted date/time context; tests mock the model and verify that context is provided, not live model interpretation quality.
+- The review result is not persistence eligibility. The later schedule workflow must still apply its final validation and user-review behavior.
+
+## Completed Spec 09 - Step 2: Schedule extraction schema and service
+
+**Spec 09 Step 2 - Schedule extraction schema and service** is implemented with mocked tests. `ScheduleExtraction` validates candidate title, intent, local date/time, optional IANA timezone, optional nonnegative durations, request classification, and ambiguity metadata. Missing required schedule fields are computed from validated candidates. Relative dates receive an explicit aware reference instant and optional user timezone. The service uses the Step 1 OpenRouter client and returns validated candidates only; it does not persist schedules, calculate estimates, or expose an API route.
+
+### Changed files
+
+- `backend/ai_provider.py` - server-side settings and isolated, timeout-aware OpenRouter client.
+- `backend/tests/test_ai_provider.py` - mocked HTTP and configuration coverage, including structured-output fallback and malformed output.
+- `backend/extraction_schemas.py` - strict Pydantic extraction contract, timezone/date/time/duration validation, ambiguity handling, and computed missing fields.
+- `backend/extraction_service.py` - prompt construction with trusted temporal context and provider orchestration.
+- `backend/tests/test_extraction_service.py` - mocked valid, incomplete, invalid, and provider-failure cases.
+- `backend/.env.example` - OpenRouter environment setting names and safe placeholders.
+- `context/decisions.md` - confirmed OpenRouter gateway and configurable model decision.
+- `context/progress-tracker.md` - this implementation and verification record.
+
+### Verification
+
+- `python -m pytest -p no:cacheprovider` from `backend/`: **passed, 68 tests**, including mocked extraction success, both intents, missing/ambiguous information, valid and unknown durations, invalid candidates, provider failures, and the existing backend suite at Step 2 completion.
+- `git diff --check`: **passed** at Step 2 completion (Git emitted expected LF-to-CRLF normalization notices).
+- No live provider call, dependency install, public route, frontend change, or database access/schema change was performed.
+
+### Remaining Step 2 limitations
+
+- No live model behavior was verified. Extraction quality, ambiguous-intent reporting, and model-specific structured-output compatibility still require later integration verification.
+- Local dates and times are extraction candidates. Combining them with timezone rules, rejecting DST gaps/repeated times, and deciding schedule eligibility remain downstream validation responsibilities.
+- `context/feature-specs/09-ai-schedule-extraction.md` was completed after Step 2; this Step 2 tracker entry records the implementation state at that time.
+
+## Completed Spec 08 - Schedule Intent and Validation
+
 **Spec 08 - Schedule Intent and Validation** is implemented and automated checks pass. Schedule intent remains explicitly represented by the existing `arrival`/`departure` enum, while the form now requires an explicit selection. Required fields are title (existing product field), intent, target local date/time, and IANA timezone. Preparation and travel durations are optional; null means unknown and is never replaced with zero.
 
 ### Scope and implementation

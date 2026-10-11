@@ -1,5 +1,7 @@
 import time
+import json
 from collections.abc import Generator
+from datetime import datetime, timezone
 import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -11,8 +13,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database import get_db
+from extraction_schemas import (
+    ExtractionReviewStatus,
+    ScheduleExtraction,
+    ScheduleExtractionReview,
+)
+from extraction_service import ScheduleExtractionError
 from main import app
 from models import Base
+from routers.extraction import get_extraction_service
 
 
 @pytest.fixture
@@ -82,6 +91,50 @@ def payload(**changes: object) -> dict[str, object]:
     }
 
 
+class StubExtractionService:
+    def __init__(self, result: ScheduleExtractionReview | Exception) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    def extract(self, text: str, **kwargs: object) -> ScheduleExtractionReview:
+        self.calls.append({"text": text, **kwargs})
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def extraction_review(*, missing_intent: bool = False) -> ScheduleExtractionReview:
+    extraction = ScheduleExtraction.model_validate_json(
+        json.dumps(
+            {
+                "is_schedule_request": True,
+                "title": "Morning class",
+                "time_intent": None if missing_intent else "arrival",
+                "target_date_local": "2026-10-12",
+                "target_time_local": "07:00:00",
+                "timezone": "Asia/Manila",
+                "preparation_duration_minutes": None,
+                "travel_duration_minutes": None,
+                "time_intent_ambiguous": missing_intent,
+                "ambiguities": ["Arrival or departure is unclear."] if missing_intent else [],
+            }
+        )
+    )
+    if missing_intent:
+        return ScheduleExtractionReview(
+            status=ExtractionReviewStatus.NEEDS_CLARIFICATION,
+            extraction=extraction,
+            resolved_target_datetime=None,
+            missing_fields=["time_intent"],
+            ambiguous_fields=["time_intent", "ambiguities"],
+        )
+    return ScheduleExtractionReview(
+        status=ExtractionReviewStatus.READY_FOR_REVIEW,
+        extraction=extraction,
+        resolved_target_datetime=datetime(2026, 10, 11, 23, tzinfo=timezone.utc),
+    )
+
+
 def test_schedule_crud_and_cancel(api_db: None, signing_key: str) -> None:
     client = TestClient(app)
     headers = bearer(signing_key)
@@ -121,6 +174,90 @@ def test_schedule_routes_require_verified_authentication(api_db: None) -> None:
         request = {"json": payload()} if method == "post" and path == "/schedules" else {}
         response = getattr(client, method)(path, **request)
         assert response.status_code == 401
+
+
+def test_extraction_endpoint_requires_verified_clerk_authentication() -> None:
+    response = TestClient(app).post(
+        "/schedules/extract",
+        json={"text": "Class tomorrow at 7", "timezone": "Asia/Manila"},
+    )
+    assert response.status_code == 401
+
+
+def test_extraction_endpoint_returns_ready_review_and_uses_verified_user_dependency(
+    api_db: None, signing_key: str
+) -> None:
+    service = StubExtractionService(extraction_review())
+    app.dependency_overrides[get_extraction_service] = lambda: service
+
+    response = TestClient(app).post(
+        "/schedules/extract",
+        headers=bearer(signing_key),
+        json={"text": "I need to arrive at class tomorrow at 7", "timezone": "Asia/Manila"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready_for_review"
+    assert response.json()["extraction"]["target_time_local"] == "07:00:00"
+    assert response.json()["extraction"]["time_intent"] == "arrival"
+    assert response.json()["extraction"]["travel_duration_minutes"] is None
+    assert response.json()["resolved_target_datetime"] == "2026-10-11T23:00:00Z"
+    assert service.calls[0]["text"] == "I need to arrive at class tomorrow at 7"
+    assert service.calls[0]["user_timezone"] == "Asia/Manila"
+    assert service.calls[0]["reference_datetime"].tzinfo == timezone.utc
+
+
+def test_extraction_endpoint_returns_structured_clarification(
+    api_db: None, signing_key: str
+) -> None:
+    service = StubExtractionService(extraction_review(missing_intent=True))
+    app.dependency_overrides[get_extraction_service] = lambda: service
+
+    response = TestClient(app).post(
+        "/schedules/extract",
+        headers=bearer(signing_key),
+        json={"text": "I have something at 7", "timezone": "Asia/Manila"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "needs_clarification"
+    assert response.json()["missing_fields"] == ["time_intent"]
+    assert "time_intent" in response.json()["ambiguous_fields"]
+
+
+def test_extraction_endpoint_maps_service_failure_to_safe_error(
+    api_db: None, signing_key: str
+) -> None:
+    service = StubExtractionService(ScheduleExtractionError("private provider detail"))
+    app.dependency_overrides[get_extraction_service] = lambda: service
+
+    response = TestClient(app).post(
+        "/schedules/extract",
+        headers=bearer(signing_key),
+        json={"text": "Class tomorrow at 7", "timezone": "Asia/Manila"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Schedule extraction is temporarily unavailable"
+    assert "private provider detail" not in response.text
+
+
+def test_extraction_endpoint_rejects_invalid_timezone_and_identity_fields(
+    api_db: None, signing_key: str
+) -> None:
+    app.dependency_overrides[get_extraction_service] = lambda: StubExtractionService(
+        ScheduleExtractionError("unused mock")
+    )
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    assert client.post(
+        "/schedules/extract", headers=headers,
+        json={"text": "Class tomorrow", "timezone": "Mars/Olympus"},
+    ).status_code == 422
+    assert client.post(
+        "/schedules/extract", headers=headers,
+        json={"text": "Class tomorrow", "timezone": "Asia/Manila", "clerk_user_id": "user_victim"},
+    ).status_code == 422
 
 
 def test_create_validation_and_client_owner_id_are_rejected(

@@ -11,11 +11,11 @@
 - Decision: Use the LLM to extract intent and candidate fields. Validate with Pydantic and domain rules. Calculate departure/wake-up times in deterministic backend code.
 - Tradeoffs: More schema and validation work, but fewer unpredictable calculations and easier tests.
 
-## DEC-002 — Keep AI provider configurable
-- Status: Proposed
-- Context: Prototype experimentation used an OpenAI-compatible client with OpenRouter, and model availability can change.
-- Decision: Keep provider URL, API key, and model ID in backend configuration and isolate provider-specific behavior.
-- Tradeoffs: Easier provider/model changes, but compatibility and structured-output behavior must be tested for each provider/model.
+## DEC-002 — Use OpenRouter as the configurable AI gateway
+- Status: Confirmed direction
+- Context: Free model availability changes, and the user wants to select or change models without application-code changes.
+- Decision: Use OpenRouter's OpenAI-compatible chat completions API with backend-only `AI_PROVIDER`, `AI_BASE_URL`, `AI_API_KEY`, and `AI_MODEL` settings. Default `AI_MODEL` to `openrouter/free`; allow a configured model override. Do not integrate directly with the OpenAI API. Request structured output where supported, fall back to less restrictive response hints when unsupported, and always validate returned content with Pydantic.
+- Tradeoffs: Model choice remains configurable, while output capabilities and free model availability vary; application validation remains authoritative.
 
 ## DEC-003 — Build in vertical slices
 - Status: Proposed
