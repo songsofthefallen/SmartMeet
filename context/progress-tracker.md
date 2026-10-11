@@ -13,18 +13,21 @@
 - `backend/tests/test_extraction_service.py` - title/timezone defaults, matching `Asia/Manila` offset normalization, explicit timezone conflict, mismatched offset, and preservation of other fields.
 - `lib/schedule-api.ts` - extraction request/response types and runtime response validation.
 - `app/schedules/schedule-workspace.tsx` - natural-language input, result/clarification display, editable candidate fields, explicit confirmation for timezone conflicts, retry, and confirmed save.
-- `lib/schedule-extraction-time.ts` and `lib/schedule-extraction-time.test.ts` - accept normalized local wall times and refuse to strip a provider offset a second time; the two unit tests cover this helper only, not the React workspace.
+- `lib/clarification-messages.ts` and `lib/clarification-messages.test.ts` - map internal clarification identifiers to user-facing messages, sanitize model ambiguity identifiers, and deduplicate equivalent questions. Regression covers “I need to go to school tomorrow.”
+- `lib/schedule-extraction-time.ts` and `lib/schedule-extraction-time.test.ts` - accept normalized local wall times and refuse to strip a provider offset a second time. Frontend unit tests exercise these helpers, not the React workspace.
 - `context/progress-tracker.md` - this Step 4 result.
 
 ### Verification
 
 - `python -m pytest -p no:cacheprovider` from `backend/`: **passed, 83 tests**.
 - `node --experimental-strip-types lib/schedule-extraction-time.test.ts`: **passed, 2 tests**.
+- `node --experimental-strip-types lib/clarification-messages.test.ts`: **passed, 1 test**, including the manual-test regression; frontend helper tests now total 3.
 - `npm run lint`: **passed**.
 - `npx tsc --noEmit`: **passed**.
 - `npm run build`: **passed** (Next.js production build).
 - `git diff --check`: **passed** (Git emitted LF-to-CRLF normalization notices only).
 - Automated checks passed as recorded above. Live OpenRouter extraction with the configured model and interactive browser end-to-end verification remain pending. A provider response captured during earlier diagnosis was used as a fixture, not as end-to-end verification. No database changes, migrations, or schedule calculations were performed.
+- Manual-test correction: raw `time_intent` appeared because model-provided `extraction.ambiguities` strings were appended directly after the structured missing/ambiguous/invalid field lists had been mapped. The formatter now maps known identifiers to display questions and deduplicates repeated requests. Extracted candidate values and explicit save behavior are unchanged.
 
 ### Remaining Step 4 verification
 

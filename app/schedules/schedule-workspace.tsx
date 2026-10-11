@@ -3,6 +3,7 @@
 import { useAuth, UserButton } from "@clerk/nextjs";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { scheduleApi, ScheduleApiError, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent } from "@/lib/schedule-api";
+import { clarificationQuestions } from "@/lib/clarification-messages";
 import { localDateTimeFromExtraction, localTimeInputFromExtraction } from "@/lib/schedule-extraction-time";
 
 type FormValues = Omit<ScheduleInput, "target_datetime" | "time_intent" | "preparation_duration_minutes"> & { target_datetime: string; time_intent: ScheduleIntent | ""; preparation_duration_minutes: number | null };
@@ -95,53 +96,6 @@ function messageFor(error: unknown): string {
   if (error instanceof ScheduleApiError) return error.message;
   if (error instanceof Error) return error.message;
   return "Something went wrong. Please try again.";
-}
-
-function clarificationQuestions(review: ScheduleExtractionReview, selectedTimezone: string): string[] {
-  const questions: string[] = [];
-  const missingQuestions: Record<string, string> = {
-    title: "What should this schedule be called?",
-    time_intent: "Is this time for arriving or leaving?",
-    target_date_local: "What date should this schedule use?",
-    target_time_local: "What local time should this schedule use?",
-    timezone: "Which timezone should interpret the target time?",
-    schedule_request: "What event or plan should be scheduled?",
-  };
-  for (const field of review.missing_fields) {
-    if (missingQuestions[field]) questions.push(missingQuestions[field]);
-  }
-  if (review.ambiguous_fields.includes("time_intent") && !questions.includes(missingQuestions.time_intent)) {
-    questions.push(missingQuestions.time_intent);
-  }
-  if (review.ambiguous_fields.includes("target_time_local")) {
-    questions.push("This local time occurs twice. Choose a time outside the repeated hour.");
-  }
-  if (review.ambiguous_fields.includes("timezone")) {
-    const modelTimezone = review.extraction?.timezone;
-    questions.push(
-      `The model identified ${modelTimezone ?? "a different timezone"}, while you selected ${selectedTimezone}. Confirm or change the timezone before saving.`,
-    );
-  }
-  if (review.invalid_fields.includes("target_time_local")) {
-    questions.push("That local time does not exist in this timezone. Choose another time.");
-  }
-  if (review.invalid_fields.includes("target_time_offset")) {
-    questions.push("The extracted time offset does not match the selected timezone. Review the local time and timezone.");
-  }
-  if (review.invalid_fields.includes("target_date_local")) {
-    questions.push("The extracted date is invalid. Enter a valid date.");
-  }
-  if (review.invalid_fields.includes("model_output")) {
-    questions.push("The extracted response could not be validated. Retry extraction or enter the schedule manually.");
-  }
-  if (review.invalid_fields.includes("title")) questions.push("Enter a valid schedule title.");
-  if (review.invalid_fields.includes("time_intent")) questions.push("Select whether this is an arrival or departure time.");
-  if (review.invalid_fields.includes("timezone")) questions.push("Select a valid timezone for this schedule.");
-  if (review.invalid_fields.some((field) => !["model_output", "title", "time_intent", "timezone", "target_date_local", "target_time_local", "target_time_offset"].includes(field))) {
-    questions.push("Some extracted values could not be validated. Review and correct the schedule fields below.");
-  }
-  questions.push(...(review.extraction?.ambiguities ?? []));
-  return [...new Set(questions)];
 }
 
 export default function ScheduleWorkspace() {
