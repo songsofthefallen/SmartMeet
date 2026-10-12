@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import CheckConstraint, DateTime, Enum as SqlEnum, Index, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, Enum as SqlEnum, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -40,10 +40,12 @@ class Schedule(Base):
             "status IN ('active', 'cancelled', 'completed')", name="schedulestatus"
         ),
         Index("ix_schedules_user_status", "clerk_user_id", "status"),
+        UniqueConstraint("clerk_user_id", "idempotency_key", name="uq_schedules_user_idempotency"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     clerk_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     time_intent: Mapped[TimeIntent] = mapped_column(

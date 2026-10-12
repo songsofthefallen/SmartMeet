@@ -49,9 +49,27 @@ def _calculate(schedule: Schedule) -> Schedule:
 
 @router.post("", response_model=ScheduleResponse, status_code=status.HTTP_201_CREATED)
 def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser) -> Schedule:
+    if payload.idempotency_key:
+        existing = db.scalar(select(Schedule).where(
+            Schedule.clerk_user_id == user_id,
+            Schedule.idempotency_key == payload.idempotency_key,
+        ))
+        if existing is not None:
+            return _calculate(existing)
     schedule = _calculate(Schedule(clerk_user_id=user_id, **payload.model_dump()))
     db.add(schedule)
-    _commit(db)
+    try:
+        _commit(db)
+    except HTTPException:
+        if payload.idempotency_key:
+            db.rollback()
+            existing = db.scalar(select(Schedule).where(
+                Schedule.clerk_user_id == user_id,
+                Schedule.idempotency_key == payload.idempotency_key,
+            ))
+            if existing is not None:
+                return _calculate(existing)
+        raise
     try:
         db.refresh(schedule)
     except SQLAlchemyError as exc:

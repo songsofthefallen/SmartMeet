@@ -1,6 +1,15 @@
 ## Current Progress
 
-No active implementation step. Spec 10 is implemented and verified as recorded below; manual browser verification remains outstanding.
+Spec 11 implementation is implemented and automated checks pass. The assistant flow automatically creates schedules after extraction or clarification produces a valid form, and retries carry a per-user idempotency key. Live browser, configured-provider, and configured MySQL migration verification remain outstanding.
+
+### Spec 11 implementation record (verification pending)
+
+- Already present: authenticated extraction, structured missing/ambiguous/invalid results, retained known values in editable fields, focused clarification text, authenticated schedule CRUD/cancel, user ownership checks, DST/timezone validation, unknown-duration handling, and Spec 10 calculations on create/update/read.
+- Changed: assistant-created schedules auto-submit once required values are valid; incomplete extraction remains unsaved; failures retain the form for retry. Assistant retry requests reuse an idempotency key. Backend create returns the existing user's schedule when the same key is repeated.
+- Added migration `20261012_0003` for nullable `schedules.idempotency_key` and unique `(clerk_user_id, idempotency_key)`; existing schedule records are preserved.
+- Added backend regression coverage for repeat submission and frontend autosave eligibility coverage.
+- Verification: backend pytest **95 passed**; frontend helper tests **6 passed**; `npm run lint`, `npx tsc --noEmit`, `npm run build`, `git diff --check`, and `alembic heads` **passed**. Alembic head is `20261012_0003`; migration application was not performed. No live provider or browser end-to-end workflow was verified.
+- Product decision recorded as DEC-015: Spec 11 supersedes Spec 09's explicit-save step for the assistant workflow; manual schedule entry/edit retain explicit submission.
 
 ## Completed Spec 10 - Deterministic Time Calculations
 

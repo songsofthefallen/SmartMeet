@@ -27,6 +27,7 @@ export type ScheduleInput = {
   timezone: string;
   preparation_duration_minutes: number | null;
   travel_duration_minutes: number | null;
+  idempotency_key?: string | null;
 };
 
 export type ScheduleExtraction = {

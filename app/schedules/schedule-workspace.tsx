@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { scheduleApi, ScheduleApiError, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent } from "@/lib/schedule-api";
 import { clarificationQuestions } from "@/lib/clarification-messages";
 import { localDateTimeFromExtraction, localTimeInputFromExtraction } from "@/lib/schedule-extraction-time";
+import { isAssistantAutosaveEligible } from "@/lib/assistant-autosave";
 
 type FormValues = Omit<ScheduleInput, "target_datetime" | "time_intent" | "preparation_duration_minutes"> & { target_datetime: string; time_intent: ScheduleIntent | ""; preparation_duration_minutes: number | null };
 type Notice = { kind: "success" | "error"; text: string };
@@ -115,6 +116,9 @@ export default function ScheduleWorkspace() {
   const [timezoneConflictConfirmed, setTimezoneConflictConfirmed] = useState(false);
   const extractionInFlight = useRef(false);
   const saveInFlight = useRef(false);
+  const autoSavePending = useRef(false);
+  const idempotencyKey = useRef<string | null>(null);
+  const scheduleForm = useRef<HTMLFormElement>(null);
   const [message, setMessage] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -168,6 +172,8 @@ export default function ScheduleWorkspace() {
     setExtractionDate("");
     setExtractionTime("");
     setTimezoneConflictConfirmed(false);
+    autoSavePending.current = false;
+    idempotencyKey.current = null;
     setView("form");
   }
 
@@ -203,6 +209,8 @@ export default function ScheduleWorkspace() {
       const token = await getToken();
       const selectedTimezone = form.timezone.trim();
       const review = await scheduleApi.extract(extractionText, selectedTimezone || null, token);
+      autoSavePending.current = true;
+      idempotencyKey.current ??= crypto.randomUUID();
       setExtractionReview(review);
       setTimezoneConflictConfirmed(!review.ambiguous_fields.includes("timezone"));
       const extracted = review.extraction;
@@ -234,6 +242,27 @@ export default function ScheduleWorkspace() {
       setExtracting(false);
     }
   }
+
+  useEffect(() => {
+    if (!autoSavePending.current || !extractionReview || editingId !== null) return;
+    const valid = isAssistantAutosaveEligible({
+      title: form.title,
+      timeIntent: form.time_intent,
+      targetDateTime: form.target_datetime,
+      timezone: form.timezone,
+      preparationMinutes: form.preparation_duration_minutes,
+      travelMinutes: form.travel_duration_minutes,
+      timezoneConflictConfirmed: !extractionReview.ambiguous_fields.includes("timezone") || timezoneConflictConfirmed,
+    });
+    if (!valid) return;
+    try {
+      toOffsetDateTime(form.target_datetime, form.timezone.trim());
+      autoSavePending.current = false;
+      scheduleForm.current?.requestSubmit();
+    } catch {
+      // Keep the candidate in the form until the user resolves the invalid local time.
+    }
+  }, [form, extractionReview, editingId, timezoneConflictConfirmed]);
 
   function updateExtractionDate(value: string) {
     setExtractionDate(value);
@@ -301,6 +330,7 @@ export default function ScheduleWorkspace() {
       time_intent: form.time_intent as ScheduleIntent,
       timezone: form.timezone.trim(),
       target_datetime: targetDateTime,
+      ...(editingId === null && idempotencyKey.current ? { idempotency_key: idempotencyKey.current } : {}),
     };
     saveInFlight.current = true;
     setSaving(true);
@@ -385,7 +415,7 @@ export default function ScheduleWorkspace() {
           </section>
 
           <section aria-label={view === "form" ? (editingId ? "Edit schedule" : "Create schedule") : "Schedule details"} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
-            {view === "form" ? <form onSubmit={(event) => void saveSchedule(event)} className="p-5 sm:p-6"><div className="mb-6 flex items-start justify-between"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">{editingId ? "EDIT SCHEDULE" : "NEW SCHEDULE"}</p><h2 className="mt-1 text-xl font-bold">{editingId ? "Update your plan" : "Create a schedule"}</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Changes are saved to your account after the API confirms them.</p></div><button type="button" className="rounded-lg p-2 text-[var(--text-muted)] hover:bg-[var(--surface-hover)]" aria-label="Close form" onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>×</button></div>
+            {view === "form" ? <form ref={scheduleForm} onSubmit={(event) => void saveSchedule(event)} className="p-5 sm:p-6"><div className="mb-6 flex items-start justify-between"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">{editingId ? "EDIT SCHEDULE" : "NEW SCHEDULE"}</p><h2 className="mt-1 text-xl font-bold">{editingId ? "Update your plan" : "Create a schedule"}</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Changes are saved to your account after the API confirms them.</p></div><button type="button" className="rounded-lg p-2 text-[var(--text-muted)] hover:bg-[var(--surface-hover)]" aria-label="Close form" onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>×</button></div>
               <div className="space-y-4">
                 {!editingId && <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)] p-4" aria-labelledby="natural-language-heading">
                   <h3 id="natural-language-heading" className="font-semibold">Describe your schedule</h3>

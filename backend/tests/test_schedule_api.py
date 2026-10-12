@@ -298,6 +298,21 @@ def test_create_validation_and_client_owner_id_are_rejected(
     assert client.post("/schedules", headers=headers, json=payload(clerk_user_id="user_victim")).status_code == 422
 
 
+def test_schedule_creation_retry_with_same_idempotency_key_returns_existing_record(
+    api_db: None, signing_key: str
+) -> None:
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    request_payload = payload(idempotency_key="schedule-attempt-00000001")
+
+    first = client.post("/schedules", headers=headers, json=request_payload)
+    retry = client.post("/schedules", headers=headers, json=request_payload)
+
+    assert first.status_code == retry.status_code == 201
+    assert first.json()["id"] == retry.json()["id"]
+    assert len(client.get("/schedules", headers=headers).json()) == 1
+
+
 @pytest.mark.parametrize("intent", ["arrival", "departure"])
 def test_api_persists_intent_and_unknown_durations(
     api_db: None, signing_key: str, intent: str

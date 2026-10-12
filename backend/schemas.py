@@ -35,6 +35,7 @@ class ScheduleCreate(BaseModel):
     timezone: NonEmptyTimezone
     preparation_duration_minutes: DurationMinutes | None = None
     travel_duration_minutes: DurationMinutes | None = None
+    idempotency_key: Annotated[str, StringConstraints(min_length=16, max_length=64)] | None = None
 
     @field_validator("target_datetime")
     @classmethod

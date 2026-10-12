@@ -90,3 +90,9 @@
 - Context: Suggested departure and preparation-start times must use explicit, testable rules, with no invented durations.
 - Decision: FastAPI calculates both recommendations from the stored target instant, time intent, known durations, and nonnegative `TRAVEL_BUFFER_MINUTES` / `PREPARATION_BUFFER_MINUTES` backend settings. Both buffers default to zero. A null duration remains unknown; unavailable calculations include a reason.
 - Tradeoffs: Operators can configure consistent buffers through backend environment settings; per-schedule buffer editing is not part of this spec.
+
+## DEC-015 - Spec 11 auto-save and retry identity
+- Status: Confirmed direction
+- Context: Spec 09 originally required explicit review and save, while confirmed auto-save decisions and Spec 11 require automatic persistence once complete and valid.
+- Decision: In the Spec 11 assistant workflow, extraction results with missing or ambiguous required fields remain unsaved and retain known values for clarification. When the form becomes valid, the frontend submits through the existing authenticated schedule-create endpoint automatically. Manual create/edit remains explicitly submitted. Each assistant save attempt reuses a client-generated idempotency key on retries; the backend enforces uniqueness per Clerk user and returns the existing schedule for repeated requests.
+- Tradeoffs: Correct retry behavior requires a nullable schedule column and unique constraint migration. Existing rows remain unchanged; clients omitting the key retain existing create semantics.
