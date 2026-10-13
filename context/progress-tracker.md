@@ -1,6 +1,21 @@
 ## Current Progress
 
-Spec 11 implementation is implemented and automated checks pass. The assistant flow automatically creates schedules after extraction or clarification produces a valid form, and retries carry a per-user idempotency key. Live browser, configured-provider, and configured MySQL migration verification remain outstanding.
+Spec 12 implementation is in place; automated verification is complete, while live provider, browser, and configured MySQL migration verification remain outstanding.
+
+### Spec 12 - Location and Geocoding (verification pending)
+
+- Implemented authenticated `POST /locations/search` backed by replaceable TomTom Search API Fuzzy Search with `typeahead=true`. Search responses and schedule selections use validated Pydantic schemas; invalid-coordinate provider entries are omitted, empty searches return no results, missing key configuration returns 503, and provider/time-out failures return a safe 502 message.
+- Added explicit location candidate selection to the schedule form. A candidate is only persisted after the user selects it; the selected result is shown in schedule details and loaded into edit mode. Search is optional and does not become an autosave prerequisite.
+- Added a nullable SQLAlchemy JSON location value and Alembic revision `20261013_0004`; prior schedules remain null. Migration SQL generation and Alembic head inspection passed. The migration was not applied to a database.
+- Switched the provider from Open-Meteo to TomTom without changing the API response or persisted selection shape. `TOMTOM_API_KEY` is loaded from the backend `.env`; no key is present in frontend variables or code. No database schema change was needed for this provider switch; existing Spec 12 migration `20261013_0004` still applies to location persistence.
+- Added mocked TomTom response coverage for POI/address mapping, typeahead/key parameters, invalid coordinates, timeout failures, and empty input; existing endpoint tests cover auth, candidate ambiguity, no results, provider errors, and persistence.
+- Provider-change files: `backend/location_service.py`, `backend/routers/locations.py`, `backend/tests/test_locations.py`, `backend/.env.example`, local `backend/.env` (placeholder added only if the variable was absent), `context/feature-specs/12-location-and-geocoding.md`, `context/decisions.md`, and this tracker.
+- Verification after provider switch: backend pytest **105 passed**; frontend unit tests **6 passed**; `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` **passed**. `alembic heads` and `alembic upgrade head --sql` **passed**; `alembic check` reported **No new upgrade operations detected**; `alembic current` reports configured MySQL at `20261013_0004 (head)`. No migration was applied in this turn. No schema migration is needed for the provider switch.
+- Remaining manual verification: replace the local `backend/.env` `TOMTOM_API_KEY` placeholder with a real developer key; verify live TomTom search and browser selection, schedule save/edit/refresh, and existing flows. Automated tests use mocked TomTom responses and do not establish provider account access or browser behavior.
+
+### Spec 11 implementation record (verification pending)
+
+The assistant flow automatically creates schedules after extraction or clarification produces a valid form, and retries carry a per-user idempotency key. Live browser, configured-provider, and configured MySQL migration verification remain outstanding.
 
 ### Spec 11 implementation record (verification pending)
 

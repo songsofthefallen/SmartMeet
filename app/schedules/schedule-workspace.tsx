@@ -2,7 +2,7 @@
 
 import { useAuth, UserButton } from "@clerk/nextjs";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { scheduleApi, ScheduleApiError, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent } from "@/lib/schedule-api";
+import { scheduleApi, ScheduleApiError, type LocationSelection, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent } from "@/lib/schedule-api";
 import { clarificationQuestions } from "@/lib/clarification-messages";
 import { localDateTimeFromExtraction, localTimeInputFromExtraction } from "@/lib/schedule-extraction-time";
 import { isAssistantAutosaveEligible } from "@/lib/assistant-autosave";
@@ -30,6 +30,7 @@ const blankForm = (): FormValues => ({
   timezone: "Asia/Manila",
   preparation_duration_minutes: null,
   travel_duration_minutes: null,
+  location: null,
 });
 const fieldClass = "mt-1.5 block w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-2.5 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--brand-primary)] focus:ring-2 focus:ring-[var(--brand-subtle)]";
 const primaryButton = "inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-[var(--brand-primary)] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[var(--brand-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand-primary)] disabled:cursor-not-allowed disabled:opacity-60";
@@ -125,6 +126,9 @@ export default function ScheduleWorkspace() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [locationQuery, setLocationQuery] = useState("");
+  const [locationResults, setLocationResults] = useState<LocationSelection[]>([]);
+  const [locationSearching, setLocationSearching] = useState(false);
 
   const activeSchedules = useMemo(
     () => schedules.filter((item) => item.status === "active").sort((a, b) => Date.parse(a.target_datetime) - Date.parse(b.target_datetime)),
@@ -187,7 +191,10 @@ export default function ScheduleWorkspace() {
       timezone: item.timezone,
       preparation_duration_minutes: item.preparation_duration_minutes,
       travel_duration_minutes: item.travel_duration_minutes,
+      location: item.location,
     });
+    setLocationQuery(item.location?.name ?? "");
+    setLocationResults([]);
     setMessage(null);
     setExtractionText("");
     setExtractionReview(null);
@@ -196,6 +203,23 @@ export default function ScheduleWorkspace() {
     setExtractionTime("");
     setTimezoneConflictConfirmed(false);
     setView("form");
+  }
+
+  async function searchLocations() {
+    if (locationSearching || locationQuery.trim().length < 2) return;
+    setLocationSearching(true);
+    setLocationResults([]);
+    setMessage(null);
+    try {
+      const token = await getToken();
+      const response = await scheduleApi.searchLocations(locationQuery.trim(), token);
+      setLocationResults(response.results);
+      if (response.results.length === 0) setMessage({ kind: "error", text: "No matching locations found. Try a nearby town or a more specific name." });
+    } catch (error) {
+      setMessage({ kind: "error", text: messageFor(error) });
+    } finally {
+      setLocationSearching(false);
+    }
   }
 
   async function extractSchedule() {
@@ -327,6 +351,7 @@ export default function ScheduleWorkspace() {
       ...form,
       title: form.title.trim(),
       description: form.description?.trim() || null,
+      location: form.location,
       time_intent: form.time_intent as ScheduleIntent,
       timezone: form.timezone.trim(),
       target_datetime: targetDateTime,
@@ -436,6 +461,7 @@ export default function ScheduleWorkspace() {
                   </div>}
                 </section>}
                 <label className="block text-sm font-medium">Title <span className="text-[var(--state-error)]">*</span><input className={fieldClass} required maxLength={200} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Team planning meeting" /></label><label className="block text-sm font-medium">Description <span className="font-normal text-[var(--text-muted)]">(optional)</span><textarea className={fieldClass} rows={3} maxLength={4000} value={form.description ?? ""} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Add notes for this schedule" /></label>
+                <fieldset className="rounded-xl border border-[var(--border)] p-4"><legend className="px-1 text-sm font-semibold">Location <span className="font-normal text-[var(--text-muted)]">(optional)</span></legend><p className="text-xs text-[var(--text-muted)]">Search and choose the exact place. Results are not saved until selected.</p>{form.location ? <div className="mt-3 flex items-start justify-between gap-3 rounded-lg bg-[var(--surface-secondary)] p-3"><div><p className="font-medium">{form.location.name}</p><p className="text-sm text-[var(--text-secondary)]">{[form.location.locality, form.location.region, form.location.country].filter(Boolean).join(", ")}</p><p className="mt-1 text-xs text-[var(--text-muted)]">{form.location.latitude.toFixed(4)}, {form.location.longitude.toFixed(4)}</p></div><button type="button" className={secondaryButton} onClick={() => { setForm({ ...form, location: null }); setLocationResults([]); }}>Change</button></div> : <><div className="mt-3 flex gap-2"><input aria-label="Search location" className={fieldClass} value={locationQuery} maxLength={200} onChange={(event) => { setLocationQuery(event.target.value); setLocationResults([]); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void searchLocations(); } }} placeholder="School, business, landmark, or address"/><button type="button" className={secondaryButton} disabled={locationSearching || locationQuery.trim().length < 2} onClick={() => void searchLocations()}>{locationSearching ? "Searching..." : "Search"}</button></div>{locationResults.length > 0 && <ul className="mt-3 space-y-2" aria-label="Location search results">{locationResults.map((location, index) => <li key={`${location.latitude}:${location.longitude}:${index}`}><button type="button" className="w-full rounded-lg border border-[var(--border)] p-3 text-left hover:bg-[var(--surface-hover)]" onClick={() => { setForm({ ...form, location }); setLocationQuery(location.name); setLocationResults([]); }}><span className="block font-medium">{location.name}</span><span className="block text-sm text-[var(--text-secondary)]">{[location.locality, location.region, location.country].filter(Boolean).join(", ")}</span>{location.timezone && <span className="mt-1 block text-xs text-[var(--text-muted)]">{location.timezone}</span>}</button></li>)}</ul>}</>}</fieldset>
                 {showSplitTargetInputs ? <div className="grid gap-4 sm:grid-cols-2">
                   <label className="block text-sm font-medium">Target date <span className="text-[var(--state-error)]">*</span><input className={fieldClass} type="date" required value={extractionDate} onChange={(event) => updateExtractionDate(event.target.value)} /></label>
                   <label className="block text-sm font-medium">Target local time <span className="text-[var(--state-error)]">*</span><input className={fieldClass} type="time" required value={extractionTime} onChange={(event) => updateExtractionTime(event.target.value)} /></label>
@@ -445,6 +471,7 @@ export default function ScheduleWorkspace() {
                 <div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-medium">Preparation <span className="font-normal text-[var(--text-muted)]">(optional, minutes)</span><input className={fieldClass} type="number" min="0" step="1" value={form.preparation_duration_minutes ?? ""} onChange={(e) => setForm({ ...form, preparation_duration_minutes: e.target.value === "" ? null : Number(e.target.value) })} /></label><label className="block text-sm font-medium">Travel duration <span className="font-normal text-[var(--text-muted)]">(optional, minutes)</span><input className={fieldClass} type="number" min="0" step="1" value={form.travel_duration_minutes ?? ""} onChange={(e) => setForm({ ...form, travel_duration_minutes: e.target.value === "" ? null : Number(e.target.value) })} /></label></div>
               </div><div className="mt-6 flex flex-col-reverse gap-3 border-t border-[var(--border)] pt-5 sm:flex-row sm:justify-end"><button type="button" className={secondaryButton} disabled={saving || extracting} onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>Discard</button><button type="submit" className={primaryButton} disabled={saving || extracting}>{saving ? "Saving..." : <><CheckIcon /> {editingId ? "Save changes" : extractionReview?.extraction ? "Save reviewed schedule" : "Add schedule"}</>}</button></div></form> : selected ? <div className="p-5 sm:p-6"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">SCHEDULE DETAILS</p><h2 className="mt-1 text-xl font-bold leading-snug">{selected.title}</h2></div><span className={`rounded-lg px-2.5 py-1 text-xs font-semibold capitalize ${selected.status === "active" ? "bg-[var(--state-success-bg)] text-[var(--state-success)]" : "bg-[var(--surface-secondary)] text-[var(--text-secondary)]"}`}>{selected.status}</span></div>
               {detailLoading ? <p className="mt-4 text-sm text-[var(--text-muted)]" role="status">Refreshing schedule details...</p> : null}
+              {selected.location && <div className="mt-5 rounded-xl border border-[var(--border)] p-4"><h3 className="text-sm font-semibold">Selected location</h3><p className="mt-1 font-medium">{selected.location.name}</p><p className="text-sm text-[var(--text-secondary)]">{[selected.location.locality, selected.location.region, selected.location.country].filter(Boolean).join(", ")}</p><p className="mt-1 text-xs text-[var(--text-muted)]">{selected.location.latitude}, {selected.location.longitude}{selected.location.timezone ? ` · ${selected.location.timezone}` : ""}</p></div>}
               <div className="mt-6 rounded-xl bg-[var(--surface-secondary)] p-4"><p className="flex items-center gap-2 text-sm font-medium text-[var(--text-muted)]"><CalendarIcon /> Target {selected.time_intent}</p><p className="mt-2 text-lg font-semibold tabular-nums">{formatDate(selected.target_datetime, selected.timezone)}</p><p className="mt-1 text-sm text-[var(--text-muted)]">{selected.timezone}</p></div>
               <dl className="mt-5 divide-y divide-[var(--border)]"><DetailRow label="Time intent" value={selected.time_intent === "arrival" ? "Arrive by" : "Leave at"} /><DetailRow label="Preparation" value={selected.preparation_duration_minutes === null ? "Not provided" : `${selected.preparation_duration_minutes} minutes`} /><DetailRow label="Travel duration" value={selected.travel_duration_minutes === null ? "Unknown" : `${selected.travel_duration_minutes} minutes`} /><DetailRow label="Description" value={selected.description || "No additional notes"} /></dl>
               <section className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label="Calculated schedule suggestions"><h3 className="text-sm font-semibold">Suggested times</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Calculated from your durations and configured buffers.</p><dl className="mt-3 divide-y divide-[var(--border)]"><div className="py-2"><dt className="text-xs text-[var(--text-muted)]">Suggested departure</dt><dd className="mt-1 text-sm font-medium">{selected.calculated_departure_time ? formatDate(selected.calculated_departure_time, selected.timezone) : selected.departure_unavailable_reason ?? "Unavailable"}</dd></div><div className="py-2"><dt className="text-xs text-[var(--text-muted)]">Wake-up / preparation start</dt><dd className="mt-1 text-sm font-medium">{selected.calculated_wake_time ? formatDate(selected.calculated_wake_time, selected.timezone) : selected.wake_unavailable_reason ?? "Unavailable"}</dd></div></dl></section>

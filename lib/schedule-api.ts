@@ -1,10 +1,20 @@
 export type ScheduleIntent = "arrival" | "departure";
 export type ScheduleStatus = "active" | "cancelled" | "completed";
+export type LocationSelection = {
+  name: string;
+  locality: string | null;
+  region: string | null;
+  country: string | null;
+  latitude: number;
+  longitude: number;
+  timezone: string | null;
+};
 
 export type Schedule = {
   id: number;
   title: string;
   description: string | null;
+  location: LocationSelection | null;
   time_intent: ScheduleIntent;
   target_datetime: string;
   timezone: string;
@@ -22,6 +32,7 @@ export type Schedule = {
 export type ScheduleInput = {
   title: string;
   description: string | null;
+  location: LocationSelection | null;
   time_intent: ScheduleIntent;
   target_datetime: string;
   timezone: string;
@@ -74,6 +85,7 @@ function isSchedule(value: unknown): value is Schedule {
     typeof value.id === "number" &&
     typeof value.title === "string" &&
     (typeof value.description === "string" || value.description === null) &&
+    (value.location === null || isLocation(value.location)) &&
     (value.time_intent === "arrival" || value.time_intent === "departure") &&
     typeof value.target_datetime === "string" &&
     typeof value.timezone === "string" &&
@@ -87,6 +99,21 @@ function isSchedule(value: unknown): value is Schedule {
     typeof value.created_at === "string" &&
     typeof value.updated_at === "string"
   );
+}
+
+function isLocation(value: unknown): value is LocationSelection {
+  if (!isRecord(value)) return false;
+  return typeof value.name === "string" &&
+    (typeof value.locality === "string" || value.locality === null) &&
+    (typeof value.region === "string" || value.region === null) &&
+    (typeof value.country === "string" || value.country === null) &&
+    typeof value.latitude === "number" && value.latitude >= -90 && value.latitude <= 90 &&
+    typeof value.longitude === "number" && value.longitude >= -180 && value.longitude <= 180 &&
+    (typeof value.timezone === "string" || value.timezone === null);
+}
+
+function isLocationSearch(value: unknown): value is { results: LocationSelection[] } {
+  return isRecord(value) && Array.isArray(value.results) && value.results.every(isLocation);
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -185,6 +212,9 @@ function isScheduleList(value: unknown): value is Schedule[] {
 }
 
 export const scheduleApi = {
+  searchLocations(query: string, token: string | null) {
+    return request<{ results: LocationSelection[] }>("/locations/search", token, "POST", { query }, isLocationSearch);
+  },
   extract(text: string, timezone: string | null, token: string | null) {
     return request<ScheduleExtractionReview>(
       "/schedules/extract",

@@ -30,6 +30,7 @@ class ScheduleCreate(BaseModel):
 
     title: NonEmptyTitle
     description: str | None = Field(default=None, max_length=4000)
+    location: "LocationSelection | None" = None
     time_intent: TimeIntent
     target_datetime: datetime
     timezone: NonEmptyTimezone
@@ -55,6 +56,7 @@ class ScheduleUpdate(BaseModel):
 
     title: NonEmptyTitle | None = None
     description: str | None = Field(default=None, max_length=4000)
+    location: "LocationSelection | None" = None
     time_intent: TimeIntent | None = None
     target_datetime: datetime | None = None
     timezone: NonEmptyTimezone | None = None
@@ -64,7 +66,7 @@ class ScheduleUpdate(BaseModel):
 
     @model_validator(mode="after")
     def disallow_null_for_non_nullable_fields(self) -> "ScheduleUpdate":
-        nullable_fields = {"description", "travel_duration_minutes", "preparation_duration_minutes"}
+        nullable_fields = {"description", "location", "travel_duration_minutes", "preparation_duration_minutes"}
         for field_name in self.model_fields_set - nullable_fields:
             if getattr(self, field_name) is None:
                 raise ValueError(f"{field_name} cannot be null")
@@ -88,6 +90,7 @@ class ScheduleResponse(BaseModel):
     clerk_user_id: str
     title: str
     description: str | None
+    location: "LocationSelection | None"
     time_intent: TimeIntent
     target_datetime: datetime
     timezone: str
@@ -115,3 +118,26 @@ class ScheduleResponse(BaseModel):
         else:
             value = value.astimezone(timezone.utc)
         return value.isoformat().replace("+00:00", "Z")
+
+
+class LocationSelection(BaseModel):
+    """A user-confirmed geocoding result stored with its schedule."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, StringConstraints(min_length=1, max_length=200, strip_whitespace=True)]
+    locality: Annotated[str, StringConstraints(max_length=120)] | None = None
+    region: Annotated[str, StringConstraints(max_length=120)] | None = None
+    country: Annotated[str, StringConstraints(max_length=120)] | None = None
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    timezone: Annotated[str, StringConstraints(max_length=64)] | None = None
+
+
+class LocationSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    query: Annotated[str, StringConstraints(min_length=2, max_length=200, strip_whitespace=True)]
+
+
+class LocationSearchResponse(BaseModel):
+    results: list[LocationSelection]
