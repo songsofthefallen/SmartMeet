@@ -1,9 +1,10 @@
 """Pydantic contracts for schedule data."""
 
+import math
 from datetime import datetime, timezone
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_serializer, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, computed_field, field_serializer, field_validator, model_validator
 
 from models import ScheduleStatus, TimeIntent
 from timezone_utils import get_iana_timezone
@@ -31,6 +32,7 @@ class ScheduleCreate(BaseModel):
     title: NonEmptyTitle
     description: str | None = Field(default=None, max_length=4000)
     location: "LocationSelection | None" = None
+    origin_location: "LocationSelection | None" = None
     time_intent: TimeIntent
     target_datetime: datetime
     timezone: NonEmptyTimezone
@@ -57,6 +59,7 @@ class ScheduleUpdate(BaseModel):
     title: NonEmptyTitle | None = None
     description: str | None = Field(default=None, max_length=4000)
     location: "LocationSelection | None" = None
+    origin_location: "LocationSelection | None" = None
     time_intent: TimeIntent | None = None
     target_datetime: datetime | None = None
     timezone: NonEmptyTimezone | None = None
@@ -66,7 +69,7 @@ class ScheduleUpdate(BaseModel):
 
     @model_validator(mode="after")
     def disallow_null_for_non_nullable_fields(self) -> "ScheduleUpdate":
-        nullable_fields = {"description", "location", "travel_duration_minutes", "preparation_duration_minutes"}
+        nullable_fields = {"description", "location", "origin_location", "travel_duration_minutes", "preparation_duration_minutes"}
         for field_name in self.model_fields_set - nullable_fields:
             if getattr(self, field_name) is None:
                 raise ValueError(f"{field_name} cannot be null")
@@ -91,14 +94,18 @@ class ScheduleResponse(BaseModel):
     title: str
     description: str | None
     location: "LocationSelection | None"
+    origin_location: "LocationSelection | None"
+    travel_estimate: "TravelEstimate | None"
     time_intent: TimeIntent
     target_datetime: datetime
     timezone: str
     preparation_duration_minutes: int | None
     travel_duration_minutes: int | None
     calculated_departure_time: datetime | None
+    calculated_arrival_time: datetime | None
     calculated_wake_time: datetime | None
     departure_unavailable_reason: str | None = None
+    arrival_unavailable_reason: str | None = None
     wake_unavailable_reason: str | None = None
     status: ScheduleStatus
     created_at: datetime
@@ -107,6 +114,7 @@ class ScheduleResponse(BaseModel):
     @field_serializer(
         "target_datetime",
         "calculated_departure_time",
+        "calculated_arrival_time",
         "calculated_wake_time",
         when_used="json",
     )
@@ -118,6 +126,37 @@ class ScheduleResponse(BaseModel):
         else:
             value = value.astimezone(timezone.utc)
         return value.isoformat().replace("+00:00", "Z")
+
+    @computed_field
+    @property
+    def route_warning(self) -> str | None:
+        estimate = self.travel_estimate
+        if estimate is None:
+            return None
+        intended_departure = self.calculated_departure_time or self.target_datetime
+        retrieved_at = estimate.retrieved_at
+        if retrieved_at.tzinfo is None or retrieved_at.utcoffset() is None:
+            retrieved_at = retrieved_at.replace(tzinfo=timezone.utc)
+        if intended_departure.tzinfo is None or intended_departure.utcoffset() is None:
+            intended_departure = intended_departure.replace(tzinfo=timezone.utc)
+        if retrieved_at.astimezone(timezone.utc) > intended_departure.astimezone(timezone.utc):
+            return "This traffic estimate was retrieved after the intended departure time and may not reflect conditions when you needed to travel."
+        return None
+
+    @computed_field
+    @property
+    def traffic_delay_minutes(self) -> int | None:
+        return self.travel_estimate.traffic_delay_minutes if self.travel_estimate else None
+
+    @computed_field
+    @property
+    def traffic_status(self) -> str:
+        return self.travel_estimate.traffic_status if self.travel_estimate else "unavailable"
+
+    @computed_field
+    @property
+    def traffic_data_source(self) -> str:
+        return self.travel_estimate.traffic_data_source if self.travel_estimate else "unknown"
 
 
 class LocationSelection(BaseModel):
@@ -132,6 +171,77 @@ class LocationSelection(BaseModel):
     latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
     longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
     timezone: Annotated[str, StringConstraints(max_length=64)] | None = None
+
+
+class TrafficSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    severity: Annotated[str, StringConstraints(pattern="^(little_or_no_delay|some_delay|significant_delay)$")]
+    delay_seconds: int = Field(ge=0)
+
+
+class TravelEstimate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    duration_seconds: int = Field(ge=0)
+    duration_minutes: int = Field(ge=0)
+    provider: Annotated[str, StringConstraints(min_length=1, max_length=40)]
+    retrieved_at: datetime
+    traffic_included: bool
+    route_time_basis: Annotated[str, StringConstraints(pattern="^(current|scheduled_departure|scheduled_arrival)$")] = "current"
+    traffic_delay_seconds: int | None = Field(default=None, ge=0)
+    no_traffic_travel_time_seconds: int | None = Field(default=None, ge=0)
+    historic_traffic_travel_time_seconds: int | None = Field(default=None, ge=0)
+    live_traffic_incidents_travel_time_seconds: int | None = Field(default=None, ge=0)
+    traffic_sections: list["TrafficSection"] = Field(default_factory=list, max_length=100)
+
+    @field_validator(
+        "traffic_delay_seconds",
+        "no_traffic_travel_time_seconds",
+        "historic_traffic_travel_time_seconds",
+        "live_traffic_incidents_travel_time_seconds",
+    )
+    @classmethod
+    def traffic_seconds_must_be_finite_integer(cls, value: int | None) -> int | None:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            raise ValueError("traffic time values must be integer seconds")
+        return value
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def retrieved_at_must_be_aware(cls, value: datetime) -> datetime:
+        return _require_aware(value)
+
+    @property
+    def traffic_delay_minutes(self) -> int | None:
+        if self.traffic_delay_seconds is not None and self.no_traffic_travel_time_seconds is not None and self.no_traffic_travel_time_seconds > 0:
+            return int(math.ceil(self.traffic_delay_seconds / 60))
+        return None
+
+    @property
+    def traffic_data_source(self) -> str:
+        live = self.live_traffic_incidents_travel_time_seconds is not None
+        historical = self.historic_traffic_travel_time_seconds is not None
+        if live and historical:
+            return "live_and_historical_available"
+        if live:
+            return "live_available"
+        if historical:
+            return "historical_available"
+        return "unknown"
+
+    @property
+    def traffic_status(self) -> str:
+        baseline = self.no_traffic_travel_time_seconds
+        delay = self.traffic_delay_seconds
+        if baseline is None or delay is None or baseline <= 0 or delay < 0:
+            return "unavailable"
+        ratio = delay / baseline
+        # Application display thresholds: little/no <= 2 minutes and <= 5%;
+        # significant >= 10 minutes or >= 20%; otherwise some delay.
+        if delay <= 120 and ratio <= 0.05:
+            return "little_or_no_delay"
+        if delay >= 600 or ratio >= 0.20:
+            return "significant_delay"
+        return "some_delay"
 
 
 class LocationSearchRequest(BaseModel):

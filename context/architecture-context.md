@@ -111,10 +111,12 @@ The user's intended local event time and timezone are the source of truth. The s
 For an arrival-time event:
 - `departure_time = arrival_time - travel_duration - arrival_buffer`
 - `wake_time = departure_time - preparation_duration`
+- If travel duration is unknown, departure remains unavailable. As requested for this workflow, a preparation-start suggestion may still be calculated as target arrival time minus known preparation duration and preparation buffer; this does not imply a departure estimate.
 
 For a departure-time event:
 - `departure_time = user_requested_departure_time`
 - `wake_time = departure_time - preparation_duration`
+- `estimated_arrival_time = departure_time + travel_duration` only when travel duration is known.
 
 Spec 10 confirms the initial configurable buffer semantics: subtract the nonnegative `TRAVEL_BUFFER_MINUTES` (default `0`) once for arrival calculations and the nonnegative `PREPARATION_BUFFER_MINUTES` (default `0`) once for preparation-start calculations. Unknown durations remain unavailable with an explicit reason. Calculations use UTC-backed instants and return schedule-local aware values for display.
 
@@ -148,7 +150,6 @@ These are proposed starting formulas. Define the meaning of each buffer before i
 - Clerk token forwarding and verification details between Next.js and FastAPI.
 - Deployment topology and CORS/CSRF strategy where applicable.
 - Durable reminder scheduler/queue and Web Push implementation details.
-- Maps/geocoding/traffic provider.
 - Weather provider.
 - Default preparation and arrival buffers.
 - Whether a user must provide origin/destination for every schedule or can use aliases.

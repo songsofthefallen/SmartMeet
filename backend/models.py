@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, Enum as SqlEnum, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, CheckConstraint, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -49,6 +49,8 @@ class Schedule(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     location: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    origin_location: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    travel_estimate: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     time_intent: Mapped[TimeIntent] = mapped_column(
         SqlEnum(
             TimeIntent,
@@ -63,6 +65,7 @@ class Schedule(Base):
     preparation_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     travel_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     calculated_departure_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    calculated_arrival_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     calculated_wake_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[ScheduleStatus] = mapped_column(
         SqlEnum(
@@ -82,3 +85,23 @@ class Schedule(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp()
     )
+
+
+class RouteRefreshAttempt(Base):
+    __tablename__ = "route_refresh_attempts"
+    __table_args__ = (
+        Index("ix_route_refresh_user_attempted", "clerk_user_id", "attempted_at"),
+        Index("ix_route_refresh_schedule_attempted", "schedule_id", "attempted_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clerk_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    schedule_id: Mapped[int] = mapped_column(ForeignKey("schedules.id", ondelete="CASCADE"), nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(12), nullable=False)
+
+
+class RouteRefreshUserLock(Base):
+    __tablename__ = "route_refresh_user_locks"
+
+    clerk_user_id: Mapped[str] = mapped_column(String(255), primary_key=True)

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "test:frontend": "node lib/traffic-display.test.js && node lib/suggested-times.test.js",
     "start": "next start",
     "lint": "eslint"
   },

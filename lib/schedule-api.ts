@@ -15,15 +15,23 @@ export type Schedule = {
   title: string;
   description: string | null;
   location: LocationSelection | null;
+  origin_location: LocationSelection | null;
+  travel_estimate: { duration_seconds: number; duration_minutes: number; provider: string; retrieved_at: string; traffic_included: boolean; route_time_basis: "current" | "scheduled_departure" | "scheduled_arrival"; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: { severity: "little_or_no_delay" | "some_delay" | "significant_delay"; delay_seconds: number }[] } | null;
+  traffic_delay_minutes: number | null;
+  traffic_status: "little_or_no_delay" | "some_delay" | "significant_delay" | "unavailable";
+  traffic_data_source: "live_available" | "historical_available" | "live_and_historical_available" | "unknown";
   time_intent: ScheduleIntent;
   target_datetime: string;
   timezone: string;
   preparation_duration_minutes: number | null;
   travel_duration_minutes: number | null;
   calculated_departure_time: string | null;
+  calculated_arrival_time: string | null;
   calculated_wake_time: string | null;
   departure_unavailable_reason: string | null;
+  arrival_unavailable_reason: string | null;
   wake_unavailable_reason: string | null;
+  route_warning: string | null;
   status: ScheduleStatus;
   created_at: string;
   updated_at: string;
@@ -33,6 +41,7 @@ export type ScheduleInput = {
   title: string;
   description: string | null;
   location: LocationSelection | null;
+  origin_location: LocationSelection | null;
   time_intent: ScheduleIntent;
   target_datetime: string;
   timezone: string;
@@ -40,6 +49,7 @@ export type ScheduleInput = {
   travel_duration_minutes: number | null;
   idempotency_key?: string | null;
 };
+export type ScheduleUpdateInput = Partial<ScheduleInput>;
 
 export type ScheduleExtraction = {
   is_schedule_request: boolean;
@@ -67,6 +77,7 @@ export class ScheduleApiError extends Error {
   constructor(
     message: string,
     readonly status: number | null,
+    readonly retryAfterSeconds: number | null = null,
   ) {
     super(message);
     this.name = "ScheduleApiError";
@@ -86,15 +97,21 @@ function isSchedule(value: unknown): value is Schedule {
     typeof value.title === "string" &&
     (typeof value.description === "string" || value.description === null) &&
     (value.location === null || isLocation(value.location)) &&
+    ((value.origin_location ?? null) === null || isLocation(value.origin_location)) &&
+    ((value.travel_estimate ?? null) === null || (isRecord(value.travel_estimate) && typeof value.travel_estimate.duration_seconds === "number" && typeof value.travel_estimate.duration_minutes === "number" && typeof value.travel_estimate.provider === "string" && typeof value.travel_estimate.retrieved_at === "string" && typeof value.travel_estimate.traffic_included === "boolean" && ["current", "scheduled_departure", "scheduled_arrival"].includes(value.travel_estimate.route_time_basis as string) && (typeof value.travel_estimate.traffic_delay_seconds === "number" || value.travel_estimate.traffic_delay_seconds === null) && (typeof value.travel_estimate.no_traffic_travel_time_seconds === "number" || value.travel_estimate.no_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.historic_traffic_travel_time_seconds === "number" || value.travel_estimate.historic_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.live_traffic_incidents_travel_time_seconds === "number" || value.travel_estimate.live_traffic_incidents_travel_time_seconds === null) && Array.isArray(value.travel_estimate.traffic_sections))) &&
+    ((typeof value.traffic_delay_minutes === "number" || value.traffic_delay_minutes === null) && ["little_or_no_delay", "some_delay", "significant_delay", "unavailable"].includes(value.traffic_status as string) && ["live_available", "historical_available", "live_and_historical_available", "unknown"].includes(value.traffic_data_source as string)) &&
     (value.time_intent === "arrival" || value.time_intent === "departure") &&
     typeof value.target_datetime === "string" &&
     typeof value.timezone === "string" &&
     (typeof value.preparation_duration_minutes === "number" || value.preparation_duration_minutes === null) &&
     (typeof value.travel_duration_minutes === "number" || value.travel_duration_minutes === null) &&
     (typeof value.calculated_departure_time === "string" || value.calculated_departure_time === null) &&
+    ((value.calculated_arrival_time ?? null) === null || typeof value.calculated_arrival_time === "string") &&
     (typeof value.calculated_wake_time === "string" || value.calculated_wake_time === null) &&
     (typeof value.departure_unavailable_reason === "string" || value.departure_unavailable_reason === null) &&
+    ((value.arrival_unavailable_reason ?? null) === null || typeof value.arrival_unavailable_reason === "string") &&
     (typeof value.wake_unavailable_reason === "string" || value.wake_unavailable_reason === null) &&
+    ((value.route_warning ?? null) === null || typeof value.route_warning === "string") &&
     (value.status === "active" || value.status === "cancelled" || value.status === "completed") &&
     typeof value.created_at === "string" &&
     typeof value.updated_at === "string"
@@ -197,6 +214,12 @@ async function request<T>(
     if (response.status === 422 && isRecord(payload)) {
       throw new ScheduleApiError(validationMessage(payload.detail) ?? "Check the schedule fields and try again.", 422);
     }
+    if (response.status === 429) {
+      const retryHeader = response.headers.get("Retry-After");
+      const retryAfter = retryHeader && /^\d+$/.test(retryHeader) ? Number(retryHeader) : null;
+      const detail = isRecord(payload) && typeof payload.detail === "string" ? payload.detail : "Route refresh is temporarily limited. Try again later.";
+      throw new ScheduleApiError(detail, 429, retryAfter);
+    }
     if (response.status >= 500) throw new ScheduleApiError("The schedule service could not complete that request. Try again later.", response.status);
     throw new ScheduleApiError("The schedule request was rejected. Check the details and try again.", response.status);
   }
@@ -233,10 +256,13 @@ export const scheduleApi = {
   create(input: ScheduleInput, token: string | null) {
     return request<Schedule>("/schedules", token, "POST", input, isSchedule);
   },
-  update(id: number, input: ScheduleInput, token: string | null) {
+  update(id: number, input: ScheduleUpdateInput, token: string | null) {
     return request<Schedule>(`/schedules/${id}`, token, "PATCH", input, isSchedule);
   },
   cancel(id: number, token: string | null) {
     return request<Schedule>(`/schedules/${id}/cancel`, token, "POST", undefined, isSchedule);
+  },
+  refreshTravelEstimate(id: number, token: string | null) {
+    return request<Schedule>(`/schedules/${id}/travel-estimate/refresh`, token, "POST", undefined, isSchedule);
   },
 };

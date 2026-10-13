@@ -91,7 +91,7 @@ Buffer defaults should be configurable through backend settings or an existing a
 
 - Unknown duration is represented as null, not zero.
 - Do not calculate an arrival-based departure recommendation without a known travel duration.
-- Do not calculate a preparation-start recommendation without a known preparation duration and departure time.
+- When preparation duration is unknown, do not calculate a preparation-start recommendation. For arrival intent with unknown travel duration, departure remains unavailable, but a preparation-start suggestion may be calculated from the target arrival time minus the known preparation duration and preparation buffer; label that basis clearly and do not imply a departure estimate.
 - A departure-based schedule can still show its specified departure time when travel duration is unknown.
 - Return an explicit reason when a calculation cannot be completed.
 - Do not fabricate travel or preparation estimates.
@@ -122,6 +122,7 @@ Buffer defaults should be configurable through backend settings or an existing a
 - Display suggested wake-up/preparation-start time when available.
 - Show the correct local date and timezone for each result.
 - Clearly distinguish calculated suggestions from user-entered target times.
+- For departure intent, show the selected target as “Departure time,” followed by backend-calculated estimated arrival and wake-up/preparation start; do not label the target departure as a suggestion. For arrival intent, retain “Suggested departure” and wake-up/preparation-start labels. Explain unavailable values using the backend's unknown-duration state without substituting zero.
 - Explain unavailable results without displaying misleading times.
 - Refresh calculated results after schedule updates.
 - Follow the existing UI context and component patterns.

@@ -57,11 +57,40 @@ def test_unknown_durations_return_reasons_without_zero_substitution() -> None:
     travel_unknown = calc(travel_duration_minutes=None)
     assert travel_unknown.departure_time is None
     assert travel_unknown.departure_unavailable_reason == "Travel duration is unknown."
-    assert travel_unknown.wake_time is None
+    assert travel_unknown.wake_time == datetime(2026, 10, 10, 23, tzinfo=timezone.utc)
     preparation_unknown = calc(preparation_duration_minutes=None)
     assert preparation_unknown.departure_time is not None
     assert preparation_unknown.wake_time is None
     assert preparation_unknown.wake_unavailable_reason == "Preparation duration is unknown."
+
+
+def test_arrival_intent_keeps_wake_suggestion_when_travel_is_unknown() -> None:
+    result = calc(travel_duration_minutes=None, preparation_duration_minutes=30)
+    assert result.departure_time is None
+    assert result.departure_unavailable_reason == "Travel duration is unknown."
+    assert result.wake_time == datetime(2026, 10, 10, 23, 30, tzinfo=timezone.utc)
+
+
+def test_departure_intent_keeps_departure_and_wake_when_travel_is_unknown() -> None:
+    result = calc(time_intent=TimeIntent.DEPARTURE, travel_duration_minutes=None, preparation_duration_minutes=30)
+    assert result.departure_time == datetime(2026, 10, 11, 0, tzinfo=timezone.utc)
+    assert result.arrival_time is None
+    assert result.arrival_unavailable_reason == "Travel duration is unknown."
+    assert result.wake_time == datetime(2026, 10, 10, 23, 30, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("intent", [TimeIntent.ARRIVAL, TimeIntent.DEPARTURE])
+def test_missing_preparation_does_not_remove_departure_or_arrival(intent: TimeIntent) -> None:
+    result = calc(time_intent=intent, preparation_duration_minutes=None)
+    assert result.departure_time is not None
+    assert result.wake_time is None
+    assert result.wake_unavailable_reason == "Preparation duration is unknown."
+    assert result.arrival_time is not None
+
+
+def test_departure_intent_estimates_arrival_from_known_travel_duration() -> None:
+    result = calc(time_intent=TimeIntent.DEPARTURE, travel_duration_minutes=45)
+    assert result.arrival_time == datetime(2026, 10, 11, 0, 45, tzinfo=timezone.utc)
 
 
 def test_calculation_crosses_midnight_in_manila() -> None:

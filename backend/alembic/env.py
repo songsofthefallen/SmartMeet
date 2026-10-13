@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
 import database
-from models import Base, Schedule  # noqa: F401 - register model metadata
+from models import Base, RouteRefreshAttempt, RouteRefreshUserLock, Schedule  # noqa: F401 - register model metadata
 
 
 config = context.config

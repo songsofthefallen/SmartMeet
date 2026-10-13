@@ -35,8 +35,10 @@ class CalculationSettings:
 @dataclass(frozen=True)
 class TimeCalculation:
     departure_time: datetime | None
+    arrival_time: datetime | None
     wake_time: datetime | None
     departure_unavailable_reason: str | None
+    arrival_unavailable_reason: str | None
     wake_unavailable_reason: str | None
 
 
@@ -63,27 +65,41 @@ def calculate_schedule_times(
     if time_intent is TimeIntent.DEPARTURE:
         departure = target
         departure_reason = None
+        arrival = (
+            target + timedelta(minutes=travel_duration_minutes)
+            if travel_duration_minutes is not None
+            else None
+        )
+        arrival_reason = None if arrival is not None else "Travel duration is unknown."
     elif travel_duration_minutes is None:
         departure = None
         departure_reason = "Travel duration is unknown."
+        arrival = target
+        arrival_reason = None
     else:
         departure = target - timedelta(minutes=travel_duration_minutes + config.travel_buffer_minutes)
         departure_reason = None
+        arrival = target
+        arrival_reason = None
 
-    if departure is None:
-        wake = None
-        wake_reason = "A departure time is unavailable."
-    elif preparation_duration_minutes is None:
+    if preparation_duration_minutes is None:
         wake = None
         wake_reason = "Preparation duration is unknown."
+    elif departure is None:
+        # With arrival intent, retain a useful preparation-start suggestion from
+        # the user's target time while clearly leaving the departure unavailable.
+        wake = target - timedelta(minutes=preparation_duration_minutes + config.preparation_buffer_minutes)
+        wake_reason = None
     else:
         wake = departure - timedelta(minutes=preparation_duration_minutes + config.preparation_buffer_minutes)
         wake_reason = None
 
     return TimeCalculation(
         departure,
+        arrival,
         wake,
         departure_reason,
+        arrival_reason,
         wake_reason,
     )
 
@@ -98,6 +114,8 @@ def recalculate_schedule(schedule: Schedule, settings: CalculationSettings | Non
         settings=settings,
     )
     schedule.calculated_departure_time = result.departure_time
+    schedule.calculated_arrival_time = result.arrival_time
     schedule.calculated_wake_time = result.wake_time
     schedule.departure_unavailable_reason = result.departure_unavailable_reason
+    schedule.arrival_unavailable_reason = result.arrival_unavailable_reason
     schedule.wake_unavailable_reason = result.wake_unavailable_reason
