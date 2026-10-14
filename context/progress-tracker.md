@@ -1,6 +1,21 @@
 ## Current Progress
 
-Spec 10 intent-specific suggested-time display is implemented and automated verification is being run. The latest change is limited to time labels and unavailable messages; backend calculation and timezone behavior remain authoritative.
+Spec 14 — Weather-Aware Buffers is implemented and automated verification passes. No live Open-Meteo call or browser workflow has been performed.
+
+### Spec 14 implementation
+
+- Added a replaceable Open-Meteo adapter that samples the already-selected origin at planned departure and destination at estimated arrival. Calls run concurrently with 4-second timeouts. Hourly values are validated; missing, unsupported, malformed, timed-out, and provider-error results return an unavailable assessment with zero buffer.
+- Rules use the strongest qualifying endpoint condition once: rain >=2.5 and <7.5 mm/hour: 5 minutes; heavy rain >=7.5: 10; snowfall >=1 cm/hour: 15; wind >=50 km/h: 10; WMO thunderstorm code 95/96/99: 20. Threshold rationale and timing behavior are in DEC-021. Base travel duration and base buffer remain separate.
+- Arrival intent uses the forecast buffer once in suggested departure; departure intent preserves its target departure and applies weather to estimated arrival. Unknown travel duration is not replaced. Weather assessments are fetched on schedule create and relevant edits/route refreshes, persisted in nullable JSON, and not fetched on reads.
+- Schedule details show summary, applied minutes/unavailable status, forecast hour and retrieval time. UI labels forecasts as estimates.
+- Added migration `20261014_0008_schedule_weather_estimate` because the validated assessment and timestamps must survive reloads without repeating provider calls. No backfill is needed; prior rows are null. Migration has not been applied to MySQL.
+- Changed files: `backend/weather_service.py`, `backend/schemas.py`, `backend/models.py`, `backend/time_calculation.py`, `backend/routers/schedules.py`, `backend/alembic/versions/20261014_0008_schedule_weather_estimate.py`, `backend/tests/test_weather.py`, `backend/tests/test_time_calculation.py`, `backend/tests/test_schedule_api.py`, `lib/schedule-api.ts`, `app/schedules/schedule-workspace.tsx`, `context/decisions.md`, and this tracker.
+- Verification: backend pytest **161 passed** after adding named weather scenarios; frontend tests passed (15 traffic assertions plus Suggested Times cases); `npm run lint`, `npx tsc --noEmit`, `npm run build`, `alembic upgrade head --sql`, and `git diff --check` passed. `alembic current` reports database revision `20261013_0007`; `alembic check` reports the database is not at the target head because `20261014_0008` is pending. No live database migration was applied.
+- Manual verification still needed: apply migration `20261014_0008`, verify live Open-Meteo response behavior with selected locations, and inspect forecast/buffer/unavailable rendering in a browser. No live provider or browser verification is claimed.
+
+## Completed Spec 10 — Historical tracker record
+
+Spec 10 intent-specific suggested-time display was implemented and verified as recorded below.
 
 ### Spec 10 intent-specific Suggested Times display
 

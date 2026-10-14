@@ -96,6 +96,7 @@ class ScheduleResponse(BaseModel):
     location: "LocationSelection | None"
     origin_location: "LocationSelection | None"
     travel_estimate: "TravelEstimate | None"
+    weather_estimate: "WeatherEstimate | None" = None
     time_intent: TimeIntent
     target_datetime: datetime
     timezone: str
@@ -177,6 +178,26 @@ class TrafficSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     severity: Annotated[str, StringConstraints(pattern="^(little_or_no_delay|some_delay|significant_delay)$")]
     delay_seconds: int = Field(ge=0)
+
+
+class WeatherEstimate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Annotated[str, StringConstraints(pattern="^(available|unavailable)$")]
+    summary: Annotated[str, StringConstraints(max_length=500)]
+    buffer_minutes: int = Field(ge=0, le=30)
+    retrieved_at: datetime | None
+    forecast_at: datetime | None = None
+    conditions: list[Annotated[str, StringConstraints(max_length=80)]] = Field(default_factory=list, max_length=10)
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def retrieved_at_must_be_aware(cls, value: datetime | None) -> datetime | None:
+        return _require_aware(value) if value is not None else None
+
+    @field_validator("forecast_at")
+    @classmethod
+    def forecast_at_must_be_aware(cls, value: datetime | None) -> datetime | None:
+        return _require_aware(value) if value is not None else None
 
 
 class TravelEstimate(BaseModel):

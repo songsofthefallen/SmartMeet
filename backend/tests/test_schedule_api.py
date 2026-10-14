@@ -22,6 +22,8 @@ from extraction_service import ScheduleExtractionError
 from main import app
 from models import Base
 from routers.extraction import get_extraction_service
+from routers.schedules import get_weather_service
+from schemas import WeatherEstimate
 
 
 @pytest.fixture
@@ -41,6 +43,7 @@ def api_db(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
             yield session
 
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_weather_service] = lambda: OfflineWeather()
     yield
     app.dependency_overrides.clear()
     engine.dispose()
@@ -103,6 +106,11 @@ class StubExtractionService:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+class OfflineWeather:
+    def assess(self, *args: object) -> WeatherEstimate:
+        return WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
 
 
 def extraction_review(*, missing_intent: bool = False) -> ScheduleExtractionReview:

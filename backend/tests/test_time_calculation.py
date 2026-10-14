@@ -53,6 +53,17 @@ def test_buffers_apply_once_and_zero_duration_is_known() -> None:
     assert result.wake_time.hour == 23 and result.wake_time.minute == 35
 
 
+def test_weather_buffer_is_additive_to_base_for_arrival_only_once() -> None:
+    result = calc(settings=CalculationSettings(travel_buffer_minutes=5), weather_buffer_minutes=10)
+    assert result.departure_time == datetime(2026, 10, 10, 22, 15, tzinfo=timezone.utc)
+
+
+def test_weather_buffer_adjusts_departure_intent_arrival_but_keeps_target_departure() -> None:
+    result = calc(time_intent=TimeIntent.DEPARTURE, weather_buffer_minutes=10)
+    assert result.departure_time == datetime(2026, 10, 11, 0, tzinfo=timezone.utc)
+    assert result.arrival_time == datetime(2026, 10, 11, 1, 40, tzinfo=timezone.utc)
+
+
 def test_unknown_durations_return_reasons_without_zero_substitution() -> None:
     travel_unknown = calc(travel_duration_minutes=None)
     assert travel_unknown.departure_time is None

@@ -51,6 +51,7 @@ class Schedule(Base):
     location: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     origin_location: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     travel_estimate: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    weather_estimate: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     time_intent: Mapped[TimeIntent] = mapped_column(
         SqlEnum(
             TimeIntent,

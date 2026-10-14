@@ -50,6 +50,7 @@ def calculate_schedule_times(
     travel_duration_minutes: int | None,
     preparation_duration_minutes: int | None,
     settings: CalculationSettings | None = None,
+    weather_buffer_minutes: int = 0,
 ) -> TimeCalculation:
     """Calculate from aware instants and return canonical UTC instants for persistence/API."""
     # MySQL and SQLite may return UTC-backed DateTime values without tzinfo.
@@ -59,6 +60,8 @@ def calculate_schedule_times(
         if value is not None and value < 0:
             raise ValueError("durations must be nonnegative")
     config = settings or CalculationSettings()
+    if weather_buffer_minutes < 0:
+        raise ValueError("weather buffer must be nonnegative")
     ZoneInfo(timezone_name)  # Validate the schedule zone; display conversion happens in the UI.
     target = target_datetime.astimezone(timezone.utc)
 
@@ -66,7 +69,7 @@ def calculate_schedule_times(
         departure = target
         departure_reason = None
         arrival = (
-            target + timedelta(minutes=travel_duration_minutes)
+            target + timedelta(minutes=travel_duration_minutes + weather_buffer_minutes)
             if travel_duration_minutes is not None
             else None
         )
@@ -77,7 +80,7 @@ def calculate_schedule_times(
         arrival = target
         arrival_reason = None
     else:
-        departure = target - timedelta(minutes=travel_duration_minutes + config.travel_buffer_minutes)
+        departure = target - timedelta(minutes=travel_duration_minutes + config.travel_buffer_minutes + weather_buffer_minutes)
         departure_reason = None
         arrival = target
         arrival_reason = None
@@ -112,6 +115,7 @@ def recalculate_schedule(schedule: Schedule, settings: CalculationSettings | Non
         travel_duration_minutes=schedule.travel_duration_minutes,
         preparation_duration_minutes=schedule.preparation_duration_minutes,
         settings=settings,
+        weather_buffer_minutes=(schedule.weather_estimate or {}).get("buffer_minutes", 0) if (schedule.weather_estimate or {}).get("status") == "available" else 0,
     )
     schedule.calculated_departure_time = result.departure_time
     schedule.calculated_arrival_time = result.arrival_time

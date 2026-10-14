@@ -8,8 +8,9 @@ from fastapi.testclient import TestClient
 
 from main import app
 from routers.schedules import get_routing_service
+from routers.schedules import get_weather_service
 from routing_service import RoutingProviderError, TomTomRoutingService
-from schemas import LocationSelection, TravelEstimate
+from schemas import LocationSelection, TravelEstimate, WeatherEstimate
 from test_schedule_api import api_db, bearer, payload, signing_key
 
 
@@ -31,6 +32,11 @@ class StubRouting:
         return current.model_copy(update={"route_time_basis": basis})
 
 
+class StubWeather:
+    def assess(self, *args: object) -> WeatherEstimate:
+        return WeatherEstimate(status="available", summary="Heavy rain near Campus", buffer_minutes=10, retrieved_at="2026-10-13T00:00:00Z", forecast_at="2026-10-13T00:00:00Z", conditions=["Heavy rain near Campus"])
+
+
 def estimate(minutes: int = 37) -> TravelEstimate:
     return TravelEstimate(duration_seconds=minutes * 60, duration_minutes=minutes, provider="tomtom", retrieved_at="2026-10-13T00:00:00Z", traffic_included=True)
 
@@ -40,8 +46,7 @@ def route_payload(**changes: object) -> dict[str, object]:
         origin_location=place("Home", 14.5, 121.0),
         location=place("Campus", 14.6, 121.1),
         travel_duration_minutes=None,
-        **changes,
-    )
+    ) | changes
 
 
 def test_schedule_routes_with_selected_origin_and_destination_and_recalculates(api_db: None, signing_key: str) -> None:
@@ -75,6 +80,31 @@ def test_schedule_routes_with_selected_origin_and_destination_and_recalculates(a
     assert len(service.calls) == 3
     assert service.calls[0][0].name == "Home"
     app.dependency_overrides.pop(get_routing_service, None)
+
+
+@pytest.mark.parametrize(
+    ("intent", "expected_departure", "expected_arrival"),
+    [
+        ("arrival", "2026-10-10T23:20:00Z", "2026-10-11T00:00:00Z"),
+        ("departure", "2026-10-11T00:00:00Z", "2026-10-11T00:40:00Z"),
+    ],
+)
+def test_weather_buffer_preserves_departure_intent_and_adjusts_arrival_intent(
+    api_db: None, signing_key: str, intent: str, expected_departure: str, expected_arrival: str,
+) -> None:
+    app.dependency_overrides[get_weather_service] = lambda: StubWeather()
+    client = TestClient(app)
+    created = client.post("/schedules", headers=bearer(signing_key), json=route_payload(
+        time_intent=intent,
+        target_datetime="2026-10-11T00:00:00Z",
+        travel_duration_minutes=30,
+    ))
+    assert created.status_code == 201
+    body = created.json()
+    assert body["calculated_departure_time"] == expected_departure
+    assert body["calculated_arrival_time"] == expected_arrival
+    assert body["weather_estimate"]["buffer_minutes"] == 10
+    app.dependency_overrides.pop(get_weather_service, None)
 
 
 def test_routing_failure_leaves_schedule_saved_with_unknown_travel(api_db: None, signing_key: str) -> None:

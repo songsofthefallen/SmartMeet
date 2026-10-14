@@ -1,7 +1,7 @@
 """Authenticated schedule endpoints."""
 
 from typing import Annotated
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -15,6 +15,7 @@ from schemas import LocationSelection, ScheduleCreate, ScheduleResponse, Schedul
 from routing_service import RoutingProviderConfigurationError, RoutingProviderError, TomTomRoutingService
 from time_calculation import CalculationSettings, recalculate_schedule
 from route_refresh_limits import RouteRefreshRateLimited, finish_attempt, reserve_attempt
+from weather_service import OpenMeteoWeatherService
 
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
@@ -113,8 +114,41 @@ def _calculate(schedule: Schedule) -> Schedule:
     return schedule
 
 
+def get_weather_service() -> OpenMeteoWeatherService:
+    return OpenMeteoWeatherService()
+
+
+WeatherService = Annotated[OpenMeteoWeatherService, Depends(get_weather_service)]
+
+
+def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> None:
+    if not schedule.origin_location or not schedule.location or schedule.travel_duration_minutes is None:
+        schedule.weather_estimate = {"status": "unavailable", "summary": "Forecast unavailable; no weather buffer applied.", "buffer_minutes": 0, "retrieved_at": None, "forecast_at": None, "conditions": []}
+        return
+    target = schedule.target_datetime
+    if target.tzinfo is None or target.utcoffset() is None:
+        target = target.replace(tzinfo=timezone.utc)
+    target = target.astimezone(timezone.utc)
+    base = CalculationSettings.from_env()
+    if schedule.time_intent.value == "arrival":
+        arrival = target
+        departure = target - timedelta(minutes=schedule.travel_duration_minutes + base.travel_buffer_minutes)
+    else:
+        departure = target
+        arrival = target + timedelta(minutes=schedule.travel_duration_minutes)
+    try:
+        result = service.assess(
+            LocationSelection.model_validate(schedule.origin_location),
+            LocationSelection.model_validate(schedule.location), departure, arrival,
+        )
+    except Exception:
+        schedule.weather_estimate = {"status": "unavailable", "summary": "Forecast unavailable; no weather buffer applied.", "buffer_minutes": 0, "retrieved_at": None, "forecast_at": None, "conditions": []}
+        return
+    schedule.weather_estimate = result.model_dump(mode="json")
+
+
 @router.post("", response_model=ScheduleResponse, status_code=status.HTTP_201_CREATED)
-def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser, routing: RoutingService) -> Schedule:
+def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser, routing: RoutingService, weather: WeatherService) -> Schedule:
     if payload.idempotency_key:
         existing = db.scalar(select(Schedule).where(
             Schedule.clerk_user_id == user_id,
@@ -125,6 +159,7 @@ def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser
     schedule = Schedule(clerk_user_id=user_id, **payload.model_dump())
     if schedule.origin_location is not None and schedule.location is not None and schedule.travel_duration_minutes is None:
         _refresh_route(schedule, routing)
+    _refresh_weather(schedule, weather)
     _calculate(schedule)
     db.add(schedule)
     try:
@@ -180,6 +215,7 @@ def update_schedule(
     db: DbSession,
     user_id: CurrentUser,
     routing: RoutingService,
+    weather: WeatherService,
 ) -> Schedule:
     try:
         schedule = _owned_schedule(db, schedule_id, user_id)
@@ -201,6 +237,8 @@ def update_schedule(
             # An explicit duration edit is a manual value, so old provider metadata
             # must not be presented as if it described that value.
             schedule.travel_estimate = None
+        if route_inputs_changed or duration_cleared or "travel_duration_minutes" in payload.model_fields_set or "target_datetime" in payload.model_fields_set or "time_intent" in payload.model_fields_set:
+            _refresh_weather(schedule, weather)
         _calculate(schedule)
         _commit(db)
         db.refresh(schedule)
@@ -230,6 +268,7 @@ def refresh_travel_estimate(
     db: DbSession,
     user_id: CurrentUser,
     routing: RoutingService,
+    weather: WeatherService,
 ) -> Schedule:
     schedule = _owned_schedule(db, schedule_id, user_id)
     if schedule.origin_location is None or schedule.location is None:
@@ -264,6 +303,7 @@ def refresh_travel_estimate(
         raise HTTPException(status_code=409, detail="The route refresh expired. Your saved estimate was kept; refresh again.")
     schedule.travel_estimate = estimate.model_dump(mode="json")
     schedule.travel_duration_minutes = estimate.duration_minutes
+    _refresh_weather(schedule, weather)
     _calculate(schedule)
     current_attempt.state = "succeeded"
     _commit(db)
