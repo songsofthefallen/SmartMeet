@@ -469,6 +469,8 @@ export default function ScheduleWorkspace() {
   }
 
   const selected = selectedId === selectedSchedule?.id ? selectedSchedule : null;
+  const originWeatherForecastAt = selected?.weather_estimate?.origin_forecast_at ?? selected?.weather_estimate?.forecast_at ?? null;
+  const destinationWeatherForecastAt = selected?.weather_estimate?.destination_forecast_at ?? null;
   const suggestedRows = selected ? suggestedTimeRows(selected, formatDate) : [];
   const preparationNote = selected ? arrivalPreparationNote(selected) : null;
   const extractionQuestions = extractionReview ? clarificationQuestions(extractionReview, form.timezone) : [];
@@ -559,7 +561,8 @@ export default function ScheduleWorkspace() {
                 <h3 className="text-sm font-semibold">Weather forecast</h3>
                 <p className="mt-2 text-sm text-[var(--text-secondary)]">{selected.weather_estimate?.summary ?? "Forecast unavailable; no weather buffer applied."}</p>
                 <p className="mt-1 text-sm">Weather buffer: {selected.weather_estimate?.status === "available" ? `${selected.weather_estimate.buffer_minutes} min` : "Not applied"}</p>
-                {selected.weather_estimate?.forecast_at && <p className="mt-1 text-xs text-[var(--text-muted)]">Forecast for {formatDate(selected.weather_estimate.forecast_at, selected.timezone)}{selected.weather_estimate.retrieved_at ? ` · retrieved ${formatDate(selected.weather_estimate.retrieved_at, selected.timezone)}` : ""}. Forecasts are estimates, not actual conditions.</p>}
+                {(originWeatherForecastAt || destinationWeatherForecastAt) && <p className="mt-1 text-xs text-[var(--text-muted)]">Forecast times: {originWeatherForecastAt ? `origin ${formatDate(originWeatherForecastAt, selected.timezone)}` : "origin unavailable"}{destinationWeatherForecastAt ? `; destination ${formatDate(destinationWeatherForecastAt, selected.timezone)}` : ""}{selected.weather_estimate?.retrieved_at ? ` · retrieved ${formatDate(selected.weather_estimate.retrieved_at, selected.timezone)}` : ""}. Forecasts are estimates, not actual conditions.</p>}
+                {selected.weather_estimate?.timing_note && <p className="mt-1 text-xs text-[var(--text-muted)]">{selected.weather_estimate.timing_note}</p>}
                 {selected.weather_estimate?.status === "unavailable" && <p className="mt-1 text-xs text-[var(--text-muted)]">Weather information unavailable for the planned trip time.</p>}
               </section>
               <section className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label="Calculated schedule suggestions"><h3 className="text-sm font-semibold">Suggested times</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Calculated from your durations and configured buffers.</p>{preparationNote && <p className="mt-2 text-xs text-[var(--state-warning)]">{preparationNote}</p>}<dl className="mt-3 divide-y divide-[var(--border)]">{suggestedRows.map((row) => <div className="py-2" key={row.label}><dt className="text-xs text-[var(--text-muted)]">{row.label}</dt><dd className="mt-1 text-sm font-medium">{row.value}</dd></div>)}</dl></section>

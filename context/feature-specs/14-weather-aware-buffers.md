@@ -30,6 +30,9 @@ Improve travel-time planning by adding a reasonable weather buffer when forecast
 - Calculate the weather buffer separately and add it to the travel buffer only when the configured rules warrant it.
 - For `arrive_by`, calculate departure using the target arrival time, travel duration, base travel buffer, and weather buffer. Calculate preparation start using the existing preparation rules.
 - For `leave_at`, preserve the user's target departure time. Update estimated arrival using the travel duration and any applicable weather adjustment, without moving the user's selected departure time.
+- Forecast the origin at the calculated departure and the destination at the calculated arrival. For `arrive_by`, retain the target arrival as the destination forecast time. For `leave_at`, the destination forecast time follows the weather-adjusted estimated arrival.
+- Resolve the weather/time dependency with at most two assessments. First assess using base-calculated times. If this yields a positive buffer, calculate interim times and make one second assessment at those times. Do not make a third assessment.
+- Use the strongest buffer from the two successful assessments. If the second assessment is unavailable, mark weather unavailable and use the base calculation with no weather buffer. If the second pass produces a stronger buffer than the first, apply that stronger value and disclose that final times may differ from the bounded second-pass sample time; do not loop for another lookup. Persist and display the origin and destination forecast hours used by the final assessment and the approximation note when applicable.
 - Never treat an unknown travel duration as zero.
 - Do not invent a wake-up time when preparation duration is unknown.
 - Keep timezone-aware calculations and future route-time behavior intact.

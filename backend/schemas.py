@@ -187,6 +187,9 @@ class WeatherEstimate(BaseModel):
     buffer_minutes: int = Field(ge=0, le=30)
     retrieved_at: datetime | None
     forecast_at: datetime | None = None
+    origin_forecast_at: datetime | None = None
+    destination_forecast_at: datetime | None = None
+    timing_note: Annotated[str, StringConstraints(max_length=300)] | None = None
     conditions: list[Annotated[str, StringConstraints(max_length=80)]] = Field(default_factory=list, max_length=10)
 
     @field_validator("retrieved_at")
@@ -197,6 +200,11 @@ class WeatherEstimate(BaseModel):
     @field_validator("forecast_at")
     @classmethod
     def forecast_at_must_be_aware(cls, value: datetime | None) -> datetime | None:
+        return _require_aware(value) if value is not None else None
+
+    @field_validator("origin_forecast_at", "destination_forecast_at")
+    @classmethod
+    def endpoint_forecast_times_must_be_aware(cls, value: datetime | None) -> datetime | None:
         return _require_aware(value) if value is not None else None
 
 

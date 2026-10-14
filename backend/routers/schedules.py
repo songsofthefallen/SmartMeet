@@ -1,7 +1,7 @@
 """Authenticated schedule endpoints."""
 
 from typing import Annotated
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 from database import get_db
 from main import verify_clerk_token
 from models import RouteRefreshAttempt, Schedule, ScheduleStatus
-from schemas import LocationSelection, ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate
+from schemas import LocationSelection, ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate, WeatherEstimate
 from routing_service import RoutingProviderConfigurationError, RoutingProviderError, TomTomRoutingService
-from time_calculation import CalculationSettings, recalculate_schedule
+from time_calculation import CalculationSettings, calculate_schedule_times, recalculate_schedule
 from route_refresh_limits import RouteRefreshRateLimited, finish_attempt, reserve_attempt
 from weather_service import OpenMeteoWeatherService
 
@@ -130,21 +130,73 @@ def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> No
         target = target.replace(tzinfo=timezone.utc)
     target = target.astimezone(timezone.utc)
     base = CalculationSettings.from_env()
-    if schedule.time_intent.value == "arrival":
-        arrival = target
-        departure = target - timedelta(minutes=schedule.travel_duration_minutes + base.travel_buffer_minutes)
-    else:
-        departure = target
-        arrival = target + timedelta(minutes=schedule.travel_duration_minutes)
-    try:
-        result = service.assess(
-            LocationSelection.model_validate(schedule.origin_location),
-            LocationSelection.model_validate(schedule.location), departure, arrival,
+    origin = LocationSelection.model_validate(schedule.origin_location)
+    destination = LocationSelection.model_validate(schedule.location)
+
+    def calculate(weather_buffer_minutes: int):
+        return calculate_schedule_times(
+            time_intent=schedule.time_intent,
+            target_datetime=target,
+            timezone_name=schedule.timezone,
+            travel_duration_minutes=schedule.travel_duration_minutes,
+            preparation_duration_minutes=schedule.preparation_duration_minutes,
+            settings=base,
+            weather_buffer_minutes=weather_buffer_minutes,
         )
+
+    initial_times = calculate(0)
+    assert initial_times.departure_time is not None and initial_times.arrival_time is not None
+    try:
+        first = WeatherEstimate.model_validate(service.assess(
+            origin, destination, initial_times.departure_time, initial_times.arrival_time,
+        ))
     except Exception:
-        schedule.weather_estimate = {"status": "unavailable", "summary": "Forecast unavailable; no weather buffer applied.", "buffer_minutes": 0, "retrieved_at": None, "forecast_at": None, "conditions": []}
+        first = WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
+    if first.status != "available" or first.buffer_minutes == 0:
+        schedule.weather_estimate = first.model_dump(mode="json")
         return
-    schedule.weather_estimate = result.model_dump(mode="json")
+
+    # One bounded follow-up assessment aligns the endpoint forecasts with the
+    # first-pass weather-adjusted schedule. No further request is made if this
+    # assessment changes the weather buffer.
+    interim_times = calculate(first.buffer_minutes)
+    assert interim_times.departure_time is not None and interim_times.arrival_time is not None
+    try:
+        second = WeatherEstimate.model_validate(service.assess(
+            origin, destination, interim_times.departure_time, interim_times.arrival_time,
+        ))
+    except Exception:
+        second = WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
+    if second.status != "available":
+        # The final forecast-time lookup failed. Fall back to no weather buffer;
+        # this returns the schedule to the initial times assessed in pass one.
+        schedule.weather_estimate = second.model_dump(mode="json")
+        return
+
+    applied_buffer = max(first.buffer_minutes, second.buffer_minutes)
+    conditions = list(dict.fromkeys([*first.conditions, *second.conditions]))[:10]
+    summary = (
+        "; ".join(conditions)[:500]
+        if conditions
+        else "No buffer-triggering conditions forecast at selected route endpoints."
+    )
+    timing_note = None
+    if second.buffer_minutes > first.buffer_minutes:
+        timing_note = (
+            "The second forecast indicated a larger buffer. Final times use that stronger buffer and may differ "
+            "from the bounded second-pass sample time; no third lookup was made."
+        )
+    schedule.weather_estimate = WeatherEstimate(
+        status="available",
+        summary=summary,
+        buffer_minutes=applied_buffer,
+        retrieved_at=second.retrieved_at,
+        forecast_at=second.origin_forecast_at or second.forecast_at,
+        origin_forecast_at=second.origin_forecast_at or second.forecast_at,
+        destination_forecast_at=second.destination_forecast_at,
+        timing_note=timing_note,
+        conditions=conditions,
+    ).model_dump(mode="json")
 
 
 @router.post("", response_model=ScheduleResponse, status_code=status.HTTP_201_CREATED)

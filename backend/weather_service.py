@@ -93,5 +93,12 @@ class OpenMeteoWeatherService:
             if int(code) in {95, 96, 99}:
                 conditions.append(f"Thunderstorm near {point}"); buffer = max(buffer, 20)
         summary = "; ".join(conditions) if conditions else "No buffer-triggering conditions forecast at selected route endpoints."
-        forecast_at = departure.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        return WeatherEstimate(status="available", summary=summary, buffer_minutes=buffer, retrieved_at=datetime.now(timezone.utc), forecast_at=forecast_at, conditions=conditions)
+        origin_forecast_at = departure.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        destination_forecast_at = arrival.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        return WeatherEstimate(
+            status="available", summary=summary, buffer_minutes=buffer,
+            retrieved_at=datetime.now(timezone.utc), forecast_at=origin_forecast_at,
+            origin_forecast_at=origin_forecast_at,
+            destination_forecast_at=destination_forecast_at,
+            conditions=conditions,
+        )

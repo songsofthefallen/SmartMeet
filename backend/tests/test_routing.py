@@ -33,8 +33,27 @@ class StubRouting:
 
 
 class StubWeather:
+    def __init__(self, results: list[WeatherEstimate] | None = None) -> None:
+        self.results = results or [
+            WeatherEstimate(status="available", summary="Heavy rain near Campus", buffer_minutes=10, retrieved_at="2026-10-13T00:00:00Z", forecast_at="2026-10-13T00:00:00Z", conditions=["Heavy rain near Campus"])
+        ]
+        self.calls: list[tuple[datetime, datetime]] = []
+
     def assess(self, *args: object) -> WeatherEstimate:
-        return WeatherEstimate(status="available", summary="Heavy rain near Campus", buffer_minutes=10, retrieved_at="2026-10-13T00:00:00Z", forecast_at="2026-10-13T00:00:00Z", conditions=["Heavy rain near Campus"])
+        departure, arrival = args[2], args[3]
+        assert isinstance(departure, datetime) and isinstance(arrival, datetime)
+        self.calls.append((departure, arrival))
+        if len(self.results) > 1:
+            result = self.results.pop(0)
+        else:
+            result = self.results[0]
+        origin_hour = departure.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        destination_hour = arrival.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        return result.model_copy(update={
+            "forecast_at": origin_hour,
+            "origin_forecast_at": origin_hour,
+            "destination_forecast_at": destination_hour,
+        })
 
 
 def estimate(minutes: int = 37) -> TravelEstimate:
@@ -92,7 +111,8 @@ def test_schedule_routes_with_selected_origin_and_destination_and_recalculates(a
 def test_weather_buffer_preserves_departure_intent_and_adjusts_arrival_intent(
     api_db: None, signing_key: str, intent: str, expected_departure: str, expected_arrival: str,
 ) -> None:
-    app.dependency_overrides[get_weather_service] = lambda: StubWeather()
+    weather = StubWeather()
+    app.dependency_overrides[get_weather_service] = lambda: weather
     client = TestClient(app)
     created = client.post("/schedules", headers=bearer(signing_key), json=route_payload(
         time_intent=intent,
@@ -104,6 +124,66 @@ def test_weather_buffer_preserves_departure_intent_and_adjusts_arrival_intent(
     assert body["calculated_departure_time"] == expected_departure
     assert body["calculated_arrival_time"] == expected_arrival
     assert body["weather_estimate"]["buffer_minutes"] == 10
+    assert len(weather.calls) == 2
+    if intent == "arrival":
+        assert weather.calls[0] == (datetime(2026, 10, 10, 23, 30, tzinfo=timezone.utc), datetime(2026, 10, 11, 0, tzinfo=timezone.utc))
+        assert weather.calls[1] == (datetime(2026, 10, 10, 23, 20, tzinfo=timezone.utc), datetime(2026, 10, 11, 0, tzinfo=timezone.utc))
+        assert body["weather_estimate"]["origin_forecast_at"] == "2026-10-10T23:00:00Z"
+        assert body["weather_estimate"]["destination_forecast_at"] == "2026-10-11T00:00:00Z"
+    else:
+        assert weather.calls[0] == (datetime(2026, 10, 11, 0, tzinfo=timezone.utc), datetime(2026, 10, 11, 0, 30, tzinfo=timezone.utc))
+        assert weather.calls[1] == (datetime(2026, 10, 11, 0, tzinfo=timezone.utc), datetime(2026, 10, 11, 0, 40, tzinfo=timezone.utc))
+        assert body["calculated_departure_time"] == "2026-10-11T00:00:00Z"
+        assert body["weather_estimate"]["destination_forecast_at"] == "2026-10-11T00:00:00Z"
+    app.dependency_overrides.pop(get_weather_service, None)
+
+
+def test_second_pass_stronger_weather_is_applied_once_and_is_bounded(api_db: None, signing_key: str) -> None:
+    first = WeatherEstimate(status="available", summary="Rain", buffer_minutes=5, retrieved_at="2026-10-13T00:00:00Z", conditions=["Rain"])
+    second = WeatherEstimate(status="available", summary="Snow", buffer_minutes=15, retrieved_at="2026-10-13T00:05:00Z", conditions=["Snow"])
+    weather = StubWeather([first, second])
+    app.dependency_overrides[get_weather_service] = lambda: weather
+    response = TestClient(app).post("/schedules", headers=bearer(signing_key), json=route_payload(
+        time_intent="arrival", target_datetime="2026-10-11T00:00:00Z", travel_duration_minutes=30,
+    ))
+    body = response.json()
+    assert response.status_code == 201
+    assert body["calculated_departure_time"] == "2026-10-10T23:15:00Z"
+    assert body["weather_estimate"]["buffer_minutes"] == 15
+    assert body["weather_estimate"]["timing_note"] is not None
+    assert len(weather.calls) == 2
+    assert weather.calls[1] == (datetime(2026, 10, 10, 23, 25, tzinfo=timezone.utc), datetime(2026, 10, 11, 0, tzinfo=timezone.utc))
+    app.dependency_overrides.pop(get_weather_service, None)
+
+
+def test_failed_second_weather_pass_falls_back_to_base_calculation(api_db: None, signing_key: str) -> None:
+    first = WeatherEstimate(status="available", summary="Rain", buffer_minutes=10, retrieved_at="2026-10-13T00:00:00Z", conditions=["Rain"])
+    unavailable = WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
+    weather = StubWeather([first, unavailable])
+    app.dependency_overrides[get_weather_service] = lambda: weather
+    response = TestClient(app).post("/schedules", headers=bearer(signing_key), json=route_payload(
+        time_intent="arrival", target_datetime="2026-10-11T00:00:00Z", travel_duration_minutes=30,
+    ))
+    body = response.json()
+    assert response.status_code == 201
+    assert body["calculated_departure_time"] == "2026-10-10T23:30:00Z"
+    assert body["weather_estimate"]["status"] == "unavailable"
+    assert body["weather_estimate"]["buffer_minutes"] == 0
+    assert len(weather.calls) == 2
+    app.dependency_overrides.pop(get_weather_service, None)
+
+
+def test_zero_weather_buffer_does_not_make_a_second_assessment(api_db: None, signing_key: str) -> None:
+    clear = WeatherEstimate(status="available", summary="Clear", buffer_minutes=0, retrieved_at="2026-10-13T00:00:00Z", conditions=[])
+    weather = StubWeather([clear])
+    app.dependency_overrides[get_weather_service] = lambda: weather
+    response = TestClient(app).post("/schedules", headers=bearer(signing_key), json=route_payload(
+        time_intent="arrival", target_datetime="2026-10-11T00:00:00Z", travel_duration_minutes=30,
+    ))
+    body = response.json()
+    assert response.status_code == 201
+    assert body["calculated_departure_time"] == "2026-10-10T23:30:00Z"
+    assert len(weather.calls) == 1
     app.dependency_overrides.pop(get_weather_service, None)
 
 
