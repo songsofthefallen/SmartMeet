@@ -2,6 +2,7 @@
 
 from typing import Annotated
 from datetime import datetime, timezone
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from main import verify_clerk_token
 from models import RouteRefreshAttempt, Schedule, ScheduleStatus
-from schemas import LocationSelection, ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate, WeatherEstimate
+from schemas import LocationSelection, ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate, WeatherAssessmentDiagnostic, WeatherEstimate
 from routing_service import RoutingProviderConfigurationError, RoutingProviderError, TomTomRoutingService
 from time_calculation import CalculationSettings, calculate_schedule_times, recalculate_schedule
 from route_refresh_limits import RouteRefreshRateLimited, finish_attempt, reserve_attempt
@@ -19,6 +20,7 @@ from weather_service import OpenMeteoWeatherService
 
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
+logger = logging.getLogger(__name__)
 DbSession = Annotated[Session, Depends(get_db)]
 CurrentUser = Annotated[str, Depends(verify_clerk_token)]
 
@@ -148,11 +150,18 @@ def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> No
     assert initial_times.departure_time is not None and initial_times.arrival_time is not None
     try:
         first = WeatherEstimate.model_validate(service.assess(
-            origin, destination, initial_times.departure_time, initial_times.arrival_time,
+            origin, destination, initial_times.departure_time, initial_times.arrival_time, assessment_pass=1,
         ))
     except Exception:
         first = WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
+        first._diagnostic = WeatherAssessmentDiagnostic(
+            reason="invalid_response_values", assessment_pass=1,
+            origin_forecast_hour=initial_times.departure_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
+            destination_forecast_hour=initial_times.arrival_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
+        )
     if first.status != "available" or first.buffer_minutes == 0:
+        if first.status != "available":
+            _log_weather_failure(first, assessment_pass=1)
         schedule.weather_estimate = first.model_dump(mode="json")
         return
 
@@ -163,11 +172,17 @@ def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> No
     assert interim_times.departure_time is not None and interim_times.arrival_time is not None
     try:
         second = WeatherEstimate.model_validate(service.assess(
-            origin, destination, interim_times.departure_time, interim_times.arrival_time,
+            origin, destination, interim_times.departure_time, interim_times.arrival_time, assessment_pass=2,
         ))
     except Exception:
         second = WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
+        second._diagnostic = WeatherAssessmentDiagnostic(
+            reason="invalid_response_values", assessment_pass=2,
+            origin_forecast_hour=interim_times.departure_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
+            destination_forecast_hour=interim_times.arrival_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
+        )
     if second.status != "available":
+        _log_weather_failure(second, assessment_pass=2, second_pass=True)
         # The final forecast-time lookup failed. Fall back to no weather buffer;
         # this returns the schedule to the initial times assessed in pass one.
         schedule.weather_estimate = second.model_dump(mode="json")
@@ -176,9 +191,9 @@ def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> No
     applied_buffer = max(first.buffer_minutes, second.buffer_minutes)
     conditions = list(dict.fromkeys([*first.conditions, *second.conditions]))[:10]
     summary = (
-        "; ".join(conditions)[:500]
-        if conditions
-        else "No buffer-triggering conditions forecast at selected route endpoints."
+        "Forecast conditions may affect travel time."
+        if applied_buffer > 0
+        else "No extra time needed based on the forecast at your origin and destination."
     )
     timing_note = None
     if second.buffer_minutes > first.buffer_minutes:
@@ -195,8 +210,32 @@ def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> No
         origin_forecast_at=second.origin_forecast_at or second.forecast_at,
         destination_forecast_at=second.destination_forecast_at,
         timing_note=timing_note,
+        origin_weather=second.origin_weather,
+        destination_weather=second.destination_weather,
         conditions=conditions,
     ).model_dump(mode="json")
+
+
+def _log_weather_failure(
+    estimate: WeatherEstimate,
+    *,
+    assessment_pass: int,
+    second_pass: bool = False,
+) -> None:
+    diagnostic = estimate._diagnostic
+    reason = "second_pass_failure" if second_pass else (diagnostic.reason if diagnostic else "assessment_unavailable")
+    logger.warning(
+        "weather_assessment_unavailable",
+        extra={
+            "weather_event": "assessment_unavailable",
+            "weather_reason": reason,
+            "weather_cause_reason": diagnostic.reason if diagnostic and second_pass else None,
+            "weather_assessment_pass": assessment_pass,
+            "weather_origin_forecast_hour": diagnostic.origin_forecast_hour if diagnostic else None,
+            "weather_destination_forecast_hour": diagnostic.destination_forecast_hour if diagnostic else None,
+            "weather_failed_point": diagnostic.failed_point if diagnostic else None,
+        },
+    )
 
 
 @router.post("", response_model=ScheduleResponse, status_code=status.HTTP_201_CREATED)

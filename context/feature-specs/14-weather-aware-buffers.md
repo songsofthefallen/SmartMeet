@@ -47,7 +47,10 @@ Improve travel-time planning by adding a reasonable weather buffer when forecast
 ### UI
 
 Display:
-- Weather summary for the planned trip.
+- Human-readable WMO weather-code condition and forecast time separately for origin and destination, plus precipitation, snowfall, and wind values returned for those forecast points.
+- Label conditions as forecasts, not current observations. A clear/sunny condition must come from the provider weather code, never from a zero weather buffer.
+- When weather is available and the buffer is zero, show: “No extra time needed based on the forecast at your origin and destination.” Keep this distinct from unavailable weather.
+- Put the weather buffer in its own line and explain the triggering conditions when a positive buffer is applied.
 - Whether an additional weather buffer was applied.
 - The additional buffer duration, if any.
 - Forecast retrieval/update time.

@@ -10,7 +10,7 @@ from main import app
 from routers.schedules import get_routing_service
 from routers.schedules import get_weather_service
 from routing_service import RoutingProviderError, TomTomRoutingService
-from schemas import LocationSelection, TravelEstimate, WeatherEstimate
+from schemas import LocationSelection, TravelEstimate, WeatherAssessmentDiagnostic, WeatherEstimate
 from test_schedule_api import api_db, bearer, payload, signing_key
 
 
@@ -38,8 +38,10 @@ class StubWeather:
             WeatherEstimate(status="available", summary="Heavy rain near Campus", buffer_minutes=10, retrieved_at="2026-10-13T00:00:00Z", forecast_at="2026-10-13T00:00:00Z", conditions=["Heavy rain near Campus"])
         ]
         self.calls: list[tuple[datetime, datetime]] = []
+        self.pass_numbers: list[int] = []
 
-    def assess(self, *args: object) -> WeatherEstimate:
+    def assess(self, *args: object, **kwargs: object) -> WeatherEstimate:
+        self.pass_numbers.append(int(kwargs.get("assessment_pass", 1)))
         departure, arrival = args[2], args[3]
         assert isinstance(departure, datetime) and isinstance(arrival, datetime)
         self.calls.append((departure, arrival))
@@ -156,9 +158,14 @@ def test_second_pass_stronger_weather_is_applied_once_and_is_bounded(api_db: Non
     app.dependency_overrides.pop(get_weather_service, None)
 
 
-def test_failed_second_weather_pass_falls_back_to_base_calculation(api_db: None, signing_key: str) -> None:
+def test_second_pass_failure_reason_is_logged_and_preserved_through_fallback(api_db: None, signing_key: str, caplog: pytest.LogCaptureFixture) -> None:
     first = WeatherEstimate(status="available", summary="Rain", buffer_minutes=10, retrieved_at="2026-10-13T00:00:00Z", conditions=["Rain"])
     unavailable = WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
+    unavailable._diagnostic = WeatherAssessmentDiagnostic(
+        reason="missing_hourly_data", assessment_pass=2,
+        origin_forecast_hour="2026-10-10T23:00Z", destination_forecast_hour="2026-10-11T00:00Z",
+        failed_point="origin",
+    )
     weather = StubWeather([first, unavailable])
     app.dependency_overrides[get_weather_service] = lambda: weather
     response = TestClient(app).post("/schedules", headers=bearer(signing_key), json=route_payload(
@@ -169,7 +176,18 @@ def test_failed_second_weather_pass_falls_back_to_base_calculation(api_db: None,
     assert body["calculated_departure_time"] == "2026-10-10T23:30:00Z"
     assert body["weather_estimate"]["status"] == "unavailable"
     assert body["weather_estimate"]["buffer_minutes"] == 0
+    assert body["weather_estimate"]["summary"] == "Forecast unavailable; no weather buffer applied."
     assert len(weather.calls) == 2
+    assert weather.pass_numbers == [1, 2]
+    assert weather.calls[1] == (datetime(2026, 10, 10, 23, 20, tzinfo=timezone.utc), datetime(2026, 10, 11, 0, tzinfo=timezone.utc))
+    failure_log = next(record for record in caplog.records if getattr(record, "weather_event", None) == "assessment_unavailable")
+    assert failure_log.weather_reason == "second_pass_failure"
+    assert failure_log.weather_cause_reason == "missing_hourly_data"
+    assert failure_log.weather_assessment_pass == 2
+    assert failure_log.weather_origin_forecast_hour == "2026-10-10T23:00Z"
+    assert failure_log.weather_failed_point == "origin"
+    assert "_diagnostic" not in body["weather_estimate"]
+    assert "missing_hourly_data" not in response.text
     app.dependency_overrides.pop(get_weather_service, None)
 
 

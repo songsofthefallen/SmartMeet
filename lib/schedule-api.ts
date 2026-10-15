@@ -9,6 +9,13 @@ export type LocationSelection = {
   longitude: number;
   timezone: string | null;
 };
+export type WeatherPointForecast = {
+  condition: string;
+  weather_code: number;
+  precipitation_mm: number;
+  snowfall_cm: number;
+  wind_speed_kmh: number;
+};
 
 export type Schedule = {
   id: number;
@@ -17,7 +24,7 @@ export type Schedule = {
   location: LocationSelection | null;
   origin_location: LocationSelection | null;
   travel_estimate: { duration_seconds: number; duration_minutes: number; provider: string; retrieved_at: string; traffic_included: boolean; route_time_basis: "current" | "scheduled_departure" | "scheduled_arrival"; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: { severity: "little_or_no_delay" | "some_delay" | "significant_delay"; delay_seconds: number }[] } | null;
-  weather_estimate: { status: "available" | "unavailable"; summary: string; buffer_minutes: number; retrieved_at: string | null; forecast_at: string | null; origin_forecast_at?: string | null; destination_forecast_at?: string | null; timing_note?: string | null; conditions: string[] } | null;
+  weather_estimate: { status: "available" | "unavailable"; summary: string; buffer_minutes: number; retrieved_at: string | null; forecast_at: string | null; origin_forecast_at?: string | null; destination_forecast_at?: string | null; timing_note?: string | null; origin_weather?: WeatherPointForecast | null; destination_weather?: WeatherPointForecast | null; conditions: string[] } | null;
   traffic_delay_minutes: number | null;
   traffic_status: "little_or_no_delay" | "some_delay" | "significant_delay" | "unavailable";
   traffic_data_source: "live_available" | "historical_available" | "live_and_historical_available" | "unknown";
@@ -100,7 +107,7 @@ function isSchedule(value: unknown): value is Schedule {
     (value.location === null || isLocation(value.location)) &&
     ((value.origin_location ?? null) === null || isLocation(value.origin_location)) &&
     ((value.travel_estimate ?? null) === null || (isRecord(value.travel_estimate) && typeof value.travel_estimate.duration_seconds === "number" && typeof value.travel_estimate.duration_minutes === "number" && typeof value.travel_estimate.provider === "string" && typeof value.travel_estimate.retrieved_at === "string" && typeof value.travel_estimate.traffic_included === "boolean" && ["current", "scheduled_departure", "scheduled_arrival"].includes(value.travel_estimate.route_time_basis as string) && (typeof value.travel_estimate.traffic_delay_seconds === "number" || value.travel_estimate.traffic_delay_seconds === null) && (typeof value.travel_estimate.no_traffic_travel_time_seconds === "number" || value.travel_estimate.no_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.historic_traffic_travel_time_seconds === "number" || value.travel_estimate.historic_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.live_traffic_incidents_travel_time_seconds === "number" || value.travel_estimate.live_traffic_incidents_travel_time_seconds === null) && Array.isArray(value.travel_estimate.traffic_sections))) &&
-    ((value.weather_estimate ?? null) === null || (isRecord(value.weather_estimate) && ["available", "unavailable"].includes(value.weather_estimate.status as string) && typeof value.weather_estimate.summary === "string" && typeof value.weather_estimate.buffer_minutes === "number" && (typeof value.weather_estimate.retrieved_at === "string" || value.weather_estimate.retrieved_at === null) && (typeof value.weather_estimate.forecast_at === "string" || value.weather_estimate.forecast_at === null) && (value.weather_estimate.origin_forecast_at === undefined || typeof value.weather_estimate.origin_forecast_at === "string" || value.weather_estimate.origin_forecast_at === null) && (value.weather_estimate.destination_forecast_at === undefined || typeof value.weather_estimate.destination_forecast_at === "string" || value.weather_estimate.destination_forecast_at === null) && (value.weather_estimate.timing_note === undefined || typeof value.weather_estimate.timing_note === "string" || value.weather_estimate.timing_note === null) && Array.isArray(value.weather_estimate.conditions))) &&
+    ((value.weather_estimate ?? null) === null || (isRecord(value.weather_estimate) && ["available", "unavailable"].includes(value.weather_estimate.status as string) && typeof value.weather_estimate.summary === "string" && typeof value.weather_estimate.buffer_minutes === "number" && (typeof value.weather_estimate.retrieved_at === "string" || value.weather_estimate.retrieved_at === null) && (typeof value.weather_estimate.forecast_at === "string" || value.weather_estimate.forecast_at === null) && (value.weather_estimate.origin_forecast_at === undefined || typeof value.weather_estimate.origin_forecast_at === "string" || value.weather_estimate.origin_forecast_at === null) && (value.weather_estimate.destination_forecast_at === undefined || typeof value.weather_estimate.destination_forecast_at === "string" || value.weather_estimate.destination_forecast_at === null) && (value.weather_estimate.timing_note === undefined || typeof value.weather_estimate.timing_note === "string" || value.weather_estimate.timing_note === null) && (value.weather_estimate.origin_weather === undefined || value.weather_estimate.origin_weather === null || isWeatherPointForecast(value.weather_estimate.origin_weather)) && (value.weather_estimate.destination_weather === undefined || value.weather_estimate.destination_weather === null || isWeatherPointForecast(value.weather_estimate.destination_weather)) && Array.isArray(value.weather_estimate.conditions))) &&
     ((typeof value.traffic_delay_minutes === "number" || value.traffic_delay_minutes === null) && ["little_or_no_delay", "some_delay", "significant_delay", "unavailable"].includes(value.traffic_status as string) && ["live_available", "historical_available", "live_and_historical_available", "unknown"].includes(value.traffic_data_source as string)) &&
     (value.time_intent === "arrival" || value.time_intent === "departure") &&
     typeof value.target_datetime === "string" &&
@@ -129,6 +136,12 @@ function isLocation(value: unknown): value is LocationSelection {
     typeof value.latitude === "number" && value.latitude >= -90 && value.latitude <= 90 &&
     typeof value.longitude === "number" && value.longitude >= -180 && value.longitude <= 180 &&
     (typeof value.timezone === "string" || value.timezone === null);
+}
+
+function isWeatherPointForecast(value: unknown): value is WeatherPointForecast {
+  return isRecord(value) && typeof value.condition === "string" && typeof value.weather_code === "number" &&
+    typeof value.precipitation_mm === "number" && typeof value.snowfall_cm === "number" &&
+    typeof value.wind_speed_kmh === "number";
 }
 
 function isLocationSearch(value: unknown): value is { results: LocationSelection[] } {

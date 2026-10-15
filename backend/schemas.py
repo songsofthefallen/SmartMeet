@@ -2,9 +2,10 @@
 
 import math
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, computed_field, field_serializer, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints, computed_field, field_serializer, field_validator, model_validator
 
 from models import ScheduleStatus, TimeIntent
 from timezone_utils import get_iana_timezone
@@ -180,6 +181,26 @@ class TrafficSection(BaseModel):
     delay_seconds: int = Field(ge=0)
 
 
+class WeatherPointForecast(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    condition: Annotated[str, StringConstraints(min_length=1, max_length=80)]
+    weather_code: int = Field(ge=0, le=99)
+    precipitation_mm: float = Field(ge=0, allow_inf_nan=False)
+    snowfall_cm: float = Field(ge=0, allow_inf_nan=False)
+    wind_speed_kmh: float = Field(ge=0, allow_inf_nan=False)
+
+
+@dataclass(frozen=True)
+class WeatherAssessmentDiagnostic:
+    """Internal-only failure context; deliberately excluded from API serialization."""
+
+    reason: str
+    assessment_pass: int
+    origin_forecast_hour: str
+    destination_forecast_hour: str
+    failed_point: str | None = None
+
+
 class WeatherEstimate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Annotated[str, StringConstraints(pattern="^(available|unavailable)$")]
@@ -190,7 +211,10 @@ class WeatherEstimate(BaseModel):
     origin_forecast_at: datetime | None = None
     destination_forecast_at: datetime | None = None
     timing_note: Annotated[str, StringConstraints(max_length=300)] | None = None
+    origin_weather: WeatherPointForecast | None = None
+    destination_weather: WeatherPointForecast | None = None
     conditions: list[Annotated[str, StringConstraints(max_length=80)]] = Field(default_factory=list, max_length=10)
+    _diagnostic: WeatherAssessmentDiagnostic | None = PrivateAttr(default=None)
 
     @field_validator("retrieved_at")
     @classmethod

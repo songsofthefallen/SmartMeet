@@ -109,7 +109,7 @@ class StubExtractionService:
 
 
 class OfflineWeather:
-    def assess(self, *args: object) -> WeatherEstimate:
+    def assess(self, *args: object, **kwargs: object) -> WeatherEstimate:
         return WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
 
 
