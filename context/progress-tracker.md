@@ -1,5 +1,13 @@
 ## Current Progress
 
+### Spec 13 traffic display consistency and stale warning diagnosis
+
+- The routing adapter uses `routes[0].summary.travelTimeInSeconds` for the route duration and `summary.trafficDelayInSeconds` for route-level traffic delay. It reads `sections[].delayInSeconds` only from `TRAFFIC` sections as per-incident delays and never sums them into the route delay. TomTom's current Routing API documentation describes these as distinct fields: route delay is compared with free-flow conditions, while a traffic section's delay is caused by its incident.
+- The old UI rounded every section upward to whole minutes independently. If exact section delays are 299, 600, and 61 seconds, their exact sum is 960 seconds (16 minutes), while the old labels showed 5 + 10 + 2 = 17 minutes. Section values also have distinct provider semantics and are not a breakdown guaranteed to total route delay. The UI now renders exact minutes/seconds, labels the route-level delay explicitly, and explains that incident delays are separate.
+- The late warning compares timezone-aware `retrieved_at` and intended departure instants after UTC normalization. It has no minute rounding or tolerance. A later retrieval within the same displayed minute is legitimately later; the warning now shows retrieval and intended-departure timestamps with seconds for clarity.
+- Added a mocked routing regression for independent summary/section fields and the per-section rounding example, frontend exact-delay formatting assertions, and route-warning cases for a later instant in the same displayed minute, an earlier instant across timezone offsets, and a genuinely later instant.
+- Verification: backend pytest **199 passed**; frontend tests passed (**19 traffic assertions** plus suggested-time tests); lint, TypeScript checks, production build, and `git diff --check` passed. No migration was required. Live TomTom and browser verification remain manual.
+
 ### Spec 14 weather failure diagnostics
 
 - Added internal structured failure reasons for unsupported forecast times, missing requested hourly data, invalid response values, provider timeouts, and provider request failures. Schedule orchestration logs a fixed warning event with assessment pass and requested UTC endpoint hours; a failed second pass is logged as `second_pass_failure` while retaining its original cause reason.

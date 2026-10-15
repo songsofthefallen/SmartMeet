@@ -393,6 +393,36 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
     assert before_request <= result.retrieved_at <= datetime.now(timezone.utc)
 
 
+def test_route_delay_and_incident_delays_remain_independent_provider_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]:
+            return {"routes": [{
+                "summary": {
+                    "travelTimeInSeconds": 79 * 60,
+                    "trafficDelayInSeconds": 16 * 60,
+                    "noTrafficTravelTimeInSeconds": 63 * 60,
+                },
+                "sections": [
+                    {"sectionType": "TRAFFIC", "delayInSeconds": 299},
+                    {"sectionType": "TRAFFIC", "delayInSeconds": 600},
+                    {"sectionType": "TRAFFIC", "delayInSeconds": 61},
+                ],
+            }]}
+
+    monkeypatch.setattr("routing_service.httpx.get", lambda *args, **kwargs: Response())
+    result = TomTomRoutingService(api_key="test-server-key").estimate(
+        LocationSelection(name="A", latitude=1, longitude=2),
+        LocationSelection(name="B", latitude=3, longitude=4),
+    )
+
+    assert result.duration_seconds == 79 * 60
+    assert result.traffic_delay_seconds == 16 * 60
+    assert result.traffic_delay_minutes == 16
+    assert [section.delay_seconds for section in result.traffic_sections] == [299, 600, 61]
+    assert sum(section.delay_seconds for section in result.traffic_sections) == result.traffic_delay_seconds
+
+
 @pytest.mark.parametrize(("summary", "status", "delay"), [
     ({"travelTimeInSeconds": 600}, "unavailable", None),
     ({"travelTimeInSeconds": 600, "trafficDelayInSeconds": 0}, "unavailable", None),

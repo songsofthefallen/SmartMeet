@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from models import Base, Schedule, ScheduleStatus, TimeIntent
-from schemas import ScheduleCreate, ScheduleResponse, ScheduleUpdate
+from schemas import ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate
 
 
 def valid_schedule_payload() -> dict[str, object]:
@@ -16,6 +16,35 @@ def valid_schedule_payload() -> dict[str, object]:
         "timezone": "Asia/Manila",
         "preparation_duration_minutes": 30,
     }
+
+
+def traffic_warning_response(timezone_name: str, target: datetime, retrieved_at: datetime) -> ScheduleResponse:
+    return ScheduleResponse(
+        id=7,
+        clerk_user_id="user_123",
+        title="Traffic warning test",
+        description=None,
+        location=None,
+        origin_location=None,
+        travel_estimate=TravelEstimate(
+            duration_seconds=600,
+            duration_minutes=10,
+            provider="tomtom",
+            retrieved_at=retrieved_at,
+            traffic_included=True,
+        ),
+        time_intent=TimeIntent.DEPARTURE,
+        target_datetime=target,
+        timezone=timezone_name,
+        preparation_duration_minutes=None,
+        travel_duration_minutes=10,
+        calculated_departure_time=target,
+        calculated_arrival_time=None,
+        calculated_wake_time=None,
+        status=ScheduleStatus.ACTIVE,
+        created_at=target,
+        updated_at=target,
+    )
 
 
 def test_schedule_model_persists_fields_and_defaults_in_sqlite() -> None:
@@ -160,6 +189,27 @@ def test_response_normalizes_offset_datetime_to_utc() -> None:
     serialized = ScheduleResponse.model_validate(schedule).model_dump(mode="json")
 
     assert serialized["target_datetime"] == "2026-10-11T00:00:00Z"
+
+
+@pytest.mark.parametrize(
+    ("timezone_name", "target", "retrieved_at", "has_warning"),
+    [
+        ("Asia/Manila", "2026-10-15T18:55:00+08:00", "2026-10-15T10:55:37Z", True),
+        ("America/Los_Angeles", "2026-10-15T03:55:00-07:00", "2026-10-15T10:54:59Z", False),
+        ("Asia/Manila", "2026-10-15T18:55:00+08:00", "2026-10-15T10:56:00Z", True),
+    ],
+    ids=["later-within-same-displayed-minute", "genuinely-earlier-other-timezone", "genuinely-later"],
+)
+def test_route_warning_compares_aware_instants_not_displayed_minutes(
+    timezone_name: str, target: str, retrieved_at: str, has_warning: bool,
+) -> None:
+    response = traffic_warning_response(
+        timezone_name,
+        datetime.fromisoformat(target),
+        datetime.fromisoformat(retrieved_at),
+    )
+
+    assert (response.route_warning is not None) is has_warning
 
 
 def test_schedule_model_constraints_and_indexes_are_declared() -> None:
