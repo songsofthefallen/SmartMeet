@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 
 import httpx
 import pytest
 
 from schemas import LocationSelection, WeatherAssessmentDiagnostic, WeatherEstimate
+import weather_service
 from weather_service import OpenMeteoWeatherService, condition_for_weather_code
 
 
@@ -17,6 +19,32 @@ class MockWeatherClient:
         if isinstance(self.payload, Exception):
             raise self.payload
         return httpx.Response(200, json=self.payload, request=httpx.Request("GET", url))
+
+
+class EndpointTimeoutClient:
+    """Mock per-endpoint outcomes while recording the configured timeout."""
+
+    def __init__(self, origin_hour: datetime, destination_hour: datetime, *, failing_latitude: float, fail_once: bool = False):
+        self.responses = {
+            14.0: forecast(origin_hour, rain=8),
+            15.0: forecast(destination_hour),
+        }
+        self.failing_latitude = failing_latitude
+        self.fail_once = fail_once
+        self.failure_used = False
+        self.calls: list[tuple[float, float]] = []
+        self.lock = Lock()
+
+    def get(self, url: str, *, params: dict[str, object], timeout: float):
+        latitude = float(params["latitude"])
+        with self.lock:
+            self.calls.append((latitude, timeout))
+            should_fail = latitude == self.failing_latitude and (not self.fail_once or not self.failure_used)
+            if should_fail:
+                self.failure_used = True
+        if should_fail:
+            raise httpx.ReadTimeout("mock provider timeout", request=httpx.Request("GET", url))
+        return httpx.Response(200, json=self.responses[latitude], request=httpx.Request("GET", url))
 
 
 def forecast(when: datetime, *, rain: float = 0, snow: float = 0, wind: float = 0, code: int = 3) -> dict[str, object]:
@@ -121,6 +149,55 @@ def test_weather_timeout_and_invalid_shape_are_unavailable() -> None:
     assert result.origin_weather is None and result.destination_weather is None
 
 
+@pytest.mark.parametrize(
+    ("failing_latitude", "failed_point"),
+    [(14.0, "origin"), (15.0, "destination")],
+    ids=["origin-timeout", "destination-timeout"],
+)
+def test_endpoint_timeout_is_unavailable_and_never_applies_unverified_buffer(
+    failing_latitude: float, failed_point: str,
+) -> None:
+    origin_time = datetime.now(timezone.utc) + timedelta(hours=3)
+    destination_time = origin_time + timedelta(hours=1)
+    client = EndpointTimeoutClient(origin_time, destination_time, failing_latitude=failing_latitude)
+    origin = LocationSelection(name="Origin", latitude=14, longitude=121)
+    destination = LocationSelection(name="Destination", latitude=15, longitude=120)
+
+    result = OpenMeteoWeatherService(client).assess(origin, destination, origin_time, destination_time)
+
+    assert result.status == "unavailable"
+    assert result.buffer_minutes == 0
+    assert result.retrieved_at is None
+    assert result.origin_weather is None and result.destination_weather is None
+    assert result._diagnostic is not None
+    assert result._diagnostic.reason == "provider_timeout"
+    assert result._diagnostic.failed_point == failed_point
+    assert len(client.calls) == 2
+    assert all(timeout == 4.0 for _, timeout in client.calls)
+
+
+def test_weather_assessment_can_recover_on_a_later_attempt_without_reusing_failed_data() -> None:
+    origin_time = datetime.now(timezone.utc) + timedelta(hours=3)
+    destination_time = origin_time + timedelta(hours=1)
+    client = EndpointTimeoutClient(origin_time, destination_time, failing_latitude=14.0, fail_once=True)
+    origin = LocationSelection(name="Origin", latitude=14, longitude=121)
+    destination = LocationSelection(name="Destination", latitude=15, longitude=120)
+    service = OpenMeteoWeatherService(client)
+
+    failed = service.assess(origin, destination, origin_time, destination_time, assessment_pass=1)
+    recovered = service.assess(origin, destination, origin_time, destination_time, assessment_pass=2)
+
+    assert failed.status == "unavailable"
+    assert failed.buffer_minutes == 0
+    assert failed._diagnostic is not None and failed._diagnostic.reason == "provider_timeout"
+    assert failed._diagnostic.failed_point == "origin"
+    assert recovered.status == "available"
+    assert recovered.buffer_minutes == 10
+    assert recovered.origin_weather is not None and recovered.origin_weather.precipitation_mm == 8
+    assert len(client.calls) == 4
+    assert all(timeout == 4.0 for _, timeout in client.calls)
+
+
 def test_weather_request_failure_has_structured_reason() -> None:
     when = datetime.now(timezone.utc) + timedelta(hours=3)
     point = LocationSelection(name="Home", latitude=14, longitude=121)
@@ -175,6 +252,72 @@ def test_weather_outside_hourly_coverage_is_unavailable() -> None:
     assert result._diagnostic is not None
     assert result._diagnostic.reason == "unsupported_forecast_time"
     assert result._diagnostic.origin_forecast_hour.endswith("Z")
+
+
+@pytest.mark.parametrize(
+    ("departure_offset", "arrival_offset", "expected_reason"),
+    [
+        (-1, 1, "departure_before_current_hour"),
+        (1, 16 * 24, "arrival_beyond_forecast_horizon"),
+        (-1, 16 * 24, "departure_before_current_hour_and_arrival_beyond_forecast_horizon"),
+    ],
+    ids=["departure-before-current-hour", "arrival-beyond-horizon", "both-rejected"],
+)
+def test_unsupported_forecast_time_has_specific_safe_reason(
+    monkeypatch: pytest.MonkeyPatch, departure_offset: int, arrival_offset: int, expected_reason: str,
+) -> None:
+    fixed_now = datetime(2026, 10, 15, 12, 30, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now.astimezone(tz) if tz else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(weather_service, "datetime", FrozenDateTime)
+    departure = fixed_now + timedelta(hours=departure_offset)
+    arrival = fixed_now + timedelta(hours=arrival_offset)
+    client = MockWeatherClient(forecast(departure))
+    point = LocationSelection(name="Private place", latitude=14, longitude=121)
+
+    result = OpenMeteoWeatherService(client).assess(point, point, departure, arrival, assessment_pass=1)
+
+    diagnostic = result._diagnostic
+    assert result.status == "unavailable"
+    assert diagnostic is not None
+    assert diagnostic.reason == "unsupported_forecast_time"
+    assert diagnostic.rejection_reason == expected_reason
+    assert diagnostic.current_utc_hour == "2026-10-15T12:00Z"
+    assert diagnostic.assessment_pass == 1
+    assert diagnostic.failed_point is None
+    assert client.calls == 0
+
+
+@pytest.mark.parametrize(
+    "offset",
+    [0, 15 * 24],
+    ids=["current-hour-boundary", "15-day-horizon-boundary"],
+)
+def test_supported_forecast_time_boundaries_are_assessed(
+    monkeypatch: pytest.MonkeyPatch, offset: int,
+) -> None:
+    fixed_now = datetime(2026, 10, 15, 12, 30, tzinfo=timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now.astimezone(tz) if tz else fixed_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(weather_service, "datetime", FrozenDateTime)
+    when = fixed_now + timedelta(hours=offset)
+    point = LocationSelection(name="Private place", latitude=14, longitude=121)
+    client = MockWeatherClient(forecast(when))
+
+    result = OpenMeteoWeatherService(client).assess(point, point, when, when)
+
+    assert result.status == "available"
+    assert result.buffer_minutes == 0
+    assert client.calls == 2
+    assert result._diagnostic is None
 
 
 def test_weather_requested_utc_hour_must_exist_in_provider_response() -> None:

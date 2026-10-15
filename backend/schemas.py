@@ -199,6 +199,8 @@ class WeatherAssessmentDiagnostic:
     origin_forecast_hour: str
     destination_forecast_hour: str
     failed_point: str | None = None
+    rejection_reason: str | None = None
+    current_utc_hour: str | None = None
 
 
 class WeatherEstimate(BaseModel):

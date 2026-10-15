@@ -1,5 +1,26 @@
 ## Current Progress
 
+### Spec 14 intermittent Open-Meteo timeout investigation
+
+- Each origin/destination HTTP request passes `timeout=4.0` to HTTPX. `_forecast()` maps `httpx.TimeoutException` to the safe `provider_timeout` reason and retains only the endpoint label and requested UTC hour; the two calls run concurrently in a two-worker executor. A timeout from either makes the complete assessment unavailable with a zero weather buffer, so unverified data is never applied.
+- Added mocked tests for origin and destination timeouts and for a subsequent assessment succeeding after a timeout. The mock confirms the 4-second timeout argument and that recovery uses newly returned weather data.
+- The observed diagnostic supports that the origin request timed out. It does not establish whether provider latency, network/local conditions, or concurrency caused it. No evidence currently justifies changing timeout configuration or concurrency; rules, fallback, and the bounded two-pass schedule flow are unchanged.
+- Verification: backend pytest **207 passed**; frontend tests, ESLint, TypeScript check, production build, and `git diff --check` passed. Pytest emitted a cache-path warning while tests passed. No live provider or browser request was performed.
+
+### Spec 14 unsupported forecast-time diagnostics
+
+- Traced the only `unsupported_forecast_time` gate: a requested departure hour earlier than the current UTC hour, or an arrival hour later than the current UTC hour plus 15 days. The existing comparison boundaries and fallback behavior are unchanged.
+- Unavailable assessments now retain a safe rejection code (`departure_before_current_hour`, `arrival_beyond_forecast_horizon`, or both) and the UTC hour used as the comparison boundary. The existing warning logger renders these alongside requested endpoint forecast hours; no locations, coordinates, secrets, or exception text are included. API serialization and persisted schedule data are unchanged.
+- Added deterministic tests for each rejection, both conditions together, the current-hour boundary, and the inclusive 15-day boundary. Updated log-format coverage for the additional safe fields.
+- A separate defensive 16-day check inside `_forecast()` maps to `invalid_response_values`, not `unsupported_forecast_time`; the specific reason requested here is produced only by the outer two-condition gate. The observed log cannot establish its historical cause because it contains no comparison-hour value. New logs will identify future occurrences.
+- Verification: backend pytest **204 passed**; frontend tests, ESLint, TypeScript check, production build, and `git diff --check` passed. No migration or frontend source change was needed. No live Open-Meteo or browser verification was performed.
+
+### Spec 14 weather diagnostics visible in local logs
+
+- Investigation found `_log_weather_failure()` populated `LogRecord` extras, but application startup had no formatter that displayed those attributes. The Alembic formatter only applies to migration commands; the default Uvicorn console formatter prints the message and omits arbitrary extras.
+- Weather failure warnings now render the approved structured fields as fixed key/value text in the log message while retaining each field as a `LogRecord` attribute for structured handlers. Regression coverage verifies all diagnostic fields in both representations and checks that names, coordinates, and key-like values are absent.
+- No weather behavior, response, or persistence changes; no migration required. Verification: backend pytest **199 passed**, frontend tests passed, lint, TypeScript checks, production build, and `git diff --check` passed. The originally observed runtime failure cause remains unknown until a subsequent failure is captured in the updated logs.
+
 ### Spec 13 traffic display consistency and stale warning diagnosis
 
 - The routing adapter uses `routes[0].summary.travelTimeInSeconds` for the route duration and `summary.trafficDelayInSeconds` for route-level traffic delay. It reads `sections[].delayInSeconds` only from `TRAFFIC` sections as per-incident delays and never sums them into the route delay. TomTom's current Routing API documentation describes these as distinct fields: route delay is compared with free-flow conditions, while a traffic section's delay is caused by its incident.

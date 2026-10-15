@@ -164,7 +164,8 @@ def test_second_pass_failure_reason_is_logged_and_preserved_through_fallback(api
     unavailable._diagnostic = WeatherAssessmentDiagnostic(
         reason="missing_hourly_data", assessment_pass=2,
         origin_forecast_hour="2026-10-10T23:00Z", destination_forecast_hour="2026-10-11T00:00Z",
-        failed_point="origin",
+        failed_point="origin", rejection_reason="arrival_beyond_forecast_horizon",
+        current_utc_hour="2026-10-10T00:00Z",
     )
     weather = StubWeather([first, unavailable])
     app.dependency_overrides[get_weather_service] = lambda: weather
@@ -185,7 +186,26 @@ def test_second_pass_failure_reason_is_logged_and_preserved_through_fallback(api
     assert failure_log.weather_cause_reason == "missing_hourly_data"
     assert failure_log.weather_assessment_pass == 2
     assert failure_log.weather_origin_forecast_hour == "2026-10-10T23:00Z"
+    assert failure_log.weather_destination_forecast_hour == "2026-10-11T00:00Z"
     assert failure_log.weather_failed_point == "origin"
+    assert failure_log.weather_rejection_reason == "arrival_beyond_forecast_horizon"
+    assert failure_log.weather_current_utc_hour == "2026-10-10T00:00Z"
+    for field in (
+        'weather_event="assessment_unavailable"',
+        'weather_reason="second_pass_failure"',
+        'weather_cause_reason="missing_hourly_data"',
+        'weather_assessment_pass=2',
+        'weather_origin_forecast_hour="2026-10-10T23:00Z"',
+        'weather_destination_forecast_hour="2026-10-11T00:00Z"',
+        'weather_failed_point="origin"',
+        'weather_rejection_reason="arrival_beyond_forecast_horizon"',
+        'weather_current_utc_hour="2026-10-10T00:00Z"',
+    ):
+        assert field in failure_log.getMessage()
+    assert "Home" not in failure_log.getMessage()
+    assert "Campus" not in failure_log.getMessage()
+    assert "14.5" not in failure_log.getMessage()
+    assert "test-server-key" not in failure_log.getMessage()
     assert "_diagnostic" not in body["weather_estimate"]
     assert "missing_hourly_data" not in response.text
     app.dependency_overrides.pop(get_weather_service, None)

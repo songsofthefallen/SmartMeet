@@ -69,6 +69,8 @@ def _unavailable(
     arrival: datetime,
     *,
     failed_point: str | None = None,
+    rejection_reason: str | None = None,
+    current_utc_hour: datetime | None = None,
 ) -> WeatherEstimate:
     estimate = WeatherEstimate(
         status="unavailable",
@@ -82,6 +84,8 @@ def _unavailable(
         origin_forecast_hour=_hour_string(departure),
         destination_forecast_hour=_hour_string(arrival),
         failed_point=failed_point,
+        rejection_reason=rejection_reason,
+        current_utc_hour=_hour_string(current_utc_hour) if current_utc_hour else None,
     )
     return estimate
 
@@ -147,8 +151,19 @@ class OpenMeteoWeatherService:
         now_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         departure_hour = departure.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
         arrival_hour = arrival.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        if departure_hour < now_hour or arrival_hour > now_hour + timedelta(days=15):
-            return _unavailable("unsupported_forecast_time", assessment_pass, departure, arrival)
+        departure_too_early = departure_hour < now_hour
+        arrival_too_late = arrival_hour > now_hour + timedelta(days=15)
+        if departure_too_early or arrival_too_late:
+            if departure_too_early and arrival_too_late:
+                rejection_reason = "departure_before_current_hour_and_arrival_beyond_forecast_horizon"
+            elif departure_too_early:
+                rejection_reason = "departure_before_current_hour"
+            else:
+                rejection_reason = "arrival_beyond_forecast_horizon"
+            return _unavailable(
+                "unsupported_forecast_time", assessment_pass, departure, arrival,
+                rejection_reason=rejection_reason, current_utc_hour=now_hour,
+            )
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 origin_future = pool.submit(self._forecast, origin, departure, "origin")

@@ -1,8 +1,9 @@
 """Authenticated schedule endpoints."""
 
-from typing import Annotated
-from datetime import datetime, timezone
+import json
 import logging
+from datetime import datetime, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -224,16 +225,26 @@ def _log_weather_failure(
 ) -> None:
     diagnostic = estimate._diagnostic
     reason = "second_pass_failure" if second_pass else (diagnostic.reason if diagnostic else "assessment_unavailable")
+    fields = {
+        "weather_event": "assessment_unavailable",
+        "weather_reason": reason,
+        "weather_cause_reason": diagnostic.reason if diagnostic and second_pass else None,
+        "weather_assessment_pass": assessment_pass,
+        "weather_origin_forecast_hour": diagnostic.origin_forecast_hour if diagnostic else None,
+        "weather_destination_forecast_hour": diagnostic.destination_forecast_hour if diagnostic else None,
+        "weather_failed_point": diagnostic.failed_point if diagnostic else None,
+        "weather_rejection_reason": diagnostic.rejection_reason if diagnostic else None,
+        "weather_current_utc_hour": diagnostic.current_utc_hour if diagnostic else None,
+    }
+    # Uvicorn's default console formatter prints the message but omits `extra`
+    # LogRecord attributes. Render these fixed, sanitized fields into the message
+    # as key=value pairs while retaining the attributes for structured handlers.
+    rendered_fields = " ".join(f"{key}={json.dumps(value)}" for key, value in fields.items())
     logger.warning(
-        "weather_assessment_unavailable",
+        "weather_assessment_unavailable %s",
+        rendered_fields,
         extra={
-            "weather_event": "assessment_unavailable",
-            "weather_reason": reason,
-            "weather_cause_reason": diagnostic.reason if diagnostic and second_pass else None,
-            "weather_assessment_pass": assessment_pass,
-            "weather_origin_forecast_hour": diagnostic.origin_forecast_hour if diagnostic else None,
-            "weather_destination_forecast_hour": diagnostic.destination_forecast_hour if diagnostic else None,
-            "weather_failed_point": diagnostic.failed_point if diagnostic else None,
+            **fields,
         },
     )
 
