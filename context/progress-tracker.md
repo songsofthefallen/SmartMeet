@@ -1,5 +1,12 @@
 ## Current Progress
 
+### Schedule list ordering — newest created first
+
+- Root cause: `GET /schedules` sorted by `target_datetime` ascending, and the active schedule list independently repeated that target-time sort. Schedules with later target dates could therefore appear above more recently created schedules.
+- The API now orders each user's schedules by `created_at DESC, id DESC`; the secondary ID order makes equal creation timestamps deterministic. The UI filters active schedules while preserving API order. The list endpoint has no pagination parameters, and the SQL ordering is applied in the query before any potential pagination.
+- Added API coverage with deliberately conflicting target dates and explicit creation timestamps, including equal timestamps to verify the ID tie-break. Existing API tests cover user scoping.
+- Verification: backend pytest **208 passed**; frontend tests passed; `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed. No frontend browser check or Alembic check was run; the model/schema did not change and no migration is needed.
+
 ### Spec 14 intermittent Open-Meteo timeout investigation
 
 - Each origin/destination HTTP request passes `timeout=4.0` to HTTPX. `_forecast()` maps `httpx.TimeoutException` to the safe `provider_timeout` reason and retains only the endpoint label and requested UTC hour; the two calls run concurrently in a two-worker executor. A timeout from either makes the complete assessment unavailable with a zero weather buffer, so unverified data is never applied.

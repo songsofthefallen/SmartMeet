@@ -140,7 +140,7 @@ export default function ScheduleWorkspace() {
   const [originSearching, setOriginSearching] = useState(false);
 
   const activeSchedules = useMemo(
-    () => schedules.filter((item) => item.status === "active").sort((a, b) => Date.parse(a.target_datetime) - Date.parse(b.target_datetime)),
+    () => schedules.filter((item) => item.status === "active"),
     [schedules],
   );
 

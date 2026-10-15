@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -20,14 +21,14 @@ from extraction_schemas import (
 )
 from extraction_service import ScheduleExtractionError
 from main import app
-from models import Base
+from models import Base, Schedule
 from routers.extraction import get_extraction_service
 from routers.schedules import get_weather_service
 from schemas import WeatherEstimate
 
 
 @pytest.fixture
-def api_db(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+def api_db(monkeypatch: pytest.MonkeyPatch) -> Generator[Engine, None, None]:
     monkeypatch.setenv("TRAVEL_BUFFER_MINUTES", "0")
     monkeypatch.setenv("PREPARATION_BUFFER_MINUTES", "0")
     engine = create_engine(
@@ -44,7 +45,7 @@ def api_db(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_weather_service] = lambda: OfflineWeather()
-    yield
+    yield engine
     app.dependency_overrides.clear()
     engine.dispose()
 
@@ -178,6 +179,39 @@ def test_schedule_crud_and_cancel(api_db: None, signing_key: str) -> None:
     cancelled = client.post(f"/schedules/{schedule_id}/cancel", headers=headers)
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+
+
+def test_schedule_list_orders_by_creation_time_then_id(api_db: Engine, signing_key: str) -> None:
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    # Target dates deliberately disagree with creation order.
+    older = client.post(
+        "/schedules", headers=headers,
+        json=payload(target_datetime="2027-01-01T07:00:00+08:00"),
+    )
+    newer = client.post(
+        "/schedules", headers=headers,
+        json=payload(target_datetime="2026-10-12T07:00:00+08:00", title="Newer"),
+    )
+    same_time = client.post(
+        "/schedules", headers=headers,
+        json=payload(target_datetime="2026-09-01T07:00:00+08:00", title="Same time"),
+    )
+    assert older.status_code == newer.status_code == same_time.status_code == 201
+
+    created_at = datetime(2026, 10, 15, 10, 0, tzinfo=timezone.utc)
+    with Session(api_db) as db:
+        db.get(Schedule, older.json()["id"]).created_at = created_at
+        db.get(Schedule, newer.json()["id"]).created_at = datetime(
+            2026, 10, 15, 10, 1, tzinfo=timezone.utc
+        )
+        db.get(Schedule, same_time.json()["id"]).created_at = created_at
+        db.commit()
+
+    listing = client.get("/schedules", headers=headers)
+    assert [item["id"] for item in listing.json()] == [
+        newer.json()["id"], same_time.json()["id"], older.json()["id"]
+    ]
 
 
 def test_manila_example_returns_utc_instants_that_display_as_630_and_530(

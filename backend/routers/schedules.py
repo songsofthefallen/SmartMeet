@@ -294,7 +294,7 @@ def list_schedules(db: DbSession, user_id: CurrentUser) -> list[Schedule]:
             db.scalars(
                 select(Schedule)
                 .where(Schedule.clerk_user_id == user_id)
-                .order_by(Schedule.target_datetime, Schedule.id)
+                .order_by(Schedule.created_at.desc(), Schedule.id.desc())
             ).all()
         )
         return [_calculate(item) for item in schedules]
