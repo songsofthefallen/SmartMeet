@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 from main import app
 from routers.schedules import get_routing_service
 from routers.schedules import get_weather_service
-from routing_service import RoutingProviderError, TomTomRoutingService
-from schemas import LocationSelection, TravelEstimate, WeatherAdvisory, WeatherAssessmentDiagnostic, WeatherEstimate
+from routing_service import RoutingProviderError, TomTomRoutingService, _reverse_geocode_cache, _reverse_geocode_cache_lock, _reverse_geocode_location, _traffic_sections
+from schemas import LocationSelection, TrafficCoordinate, TrafficSection, TravelEstimate, WeatherAdvisory, WeatherAssessmentDiagnostic, WeatherEstimate
 from test_schedule_api import api_db, bearer, payload, signing_key
 
 
@@ -23,7 +23,7 @@ class StubRouting:
         self.result = result
         self.calls: list[tuple[LocationSelection, LocationSelection, dict[str, datetime]]] = []
 
-    def estimate(self, origin: LocationSelection, destination: LocationSelection, **route_times: datetime) -> TravelEstimate:
+    def estimate(self, origin: LocationSelection, destination: LocationSelection, **route_times: object) -> TravelEstimate:
         self.calls.append((origin, destination, route_times))
         current = self.result.pop(0) if isinstance(self.result, list) else self.result
         if isinstance(current, Exception):
@@ -185,6 +185,8 @@ def test_manual_route_refresh_success_updates_estimate_and_calculations(api_db: 
     assert refreshed.json()["travel_duration_minutes"] == 42
     assert refreshed.json()["calculated_departure_time"] == "2026-10-10T22:18:00Z"
     assert refreshed.json()["travel_estimate"]["duration_minutes"] == 42
+    assert "diagnose_unnamed_traffic_sections" not in service.calls[0][2]
+    assert service.calls[1][2]["diagnose_unnamed_traffic_sections"] is True
     app.dependency_overrides.pop(get_routing_service, None)
 
 
@@ -322,14 +324,15 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
     class Response:
         def raise_for_status(self) -> None: pass
         def json(self) -> dict[str, object]:
-            return {"routes": [{"summary": {"travelTimeInSeconds": 161, "trafficDelayInSeconds": 15, "noTrafficTravelTimeInSeconds": 120, "historicTrafficTravelTimeInSeconds": 157, "liveTrafficIncidentsTravelTimeInSeconds": 161}, "sections": [{"sectionType": "TRAFFIC", "delayInSeconds": 301}, {"sectionType": "TRAFFIC", "delayInSeconds": 900}, {"sectionType": "COUNTRY", "delayInSeconds": 999}]}]}
+            return {"routes": [{"summary": {"travelTimeInSeconds": 161, "trafficDelayInSeconds": 15, "noTrafficTravelTimeInSeconds": 120, "historicTrafficTravelTimeInSeconds": 157, "liveTrafficIncidentsTravelTimeInSeconds": 161}, "legs": [{"points": [{"latitude": 14.5, "longitude": 121.0}, {"latitude": 14.55, "longitude": 121.05}, {"latitude": 14.6, "longitude": 121.1}]}], "sections": [{"sectionType": "TRAFFIC", "delayInSeconds": 301, "startPointIndex": 0, "endPointIndex": 2, "simpleCategory": "JAM"}, {"sectionType": "TRAFFIC", "delayInSeconds": 900, "startPointIndex": 3, "endPointIndex": 4}, {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 1, "endPointIndex": 2, "streetName": {"text": "Verified Road"}, "roadNumbers": [{"text": "A10"}]}, {"sectionType": "COUNTRY", "delayInSeconds": 999}]}]}
 
     def fake_get(url: str, *, params: dict[str, object], timeout: float) -> Response:
         assert url.endswith("/14.5,121.0:14.6,121.1/json")
         assert params["key"] == "test-server-key"
         assert params["traffic"] == "true"
         assert params["computeTravelTimeFor"] == "all"
-        assert params["sectionType"] == "traffic"
+        assert params["sectionType"] == ["traffic", "importantRoadStretch"]
+        assert params["routeRepresentation"] == "polyline"
         assert "departAt" not in params and "arriveAt" not in params
         assert timeout <= 10
         return Response()
@@ -347,6 +350,13 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
     assert result.traffic_status == "some_delay"
     assert result.traffic_data_source == "live_and_historical_available"
     assert [item.delay_seconds for item in result.traffic_sections] == [301, 900]
+    assert result.traffic_sections[0].road_names == ["Verified Road"]
+    assert result.traffic_sections[0].road_numbers == ["A10"]
+    assert result.traffic_sections[0].incident_type == "JAM"
+    assert result.traffic_sections[0].start_coordinates.latitude == 14.5
+    assert result.traffic_sections[0].end_coordinates.longitude == 121.1
+    assert result.traffic_sections[1].road_names == []
+    assert result.traffic_sections[1].end_coordinates is None
     assert before_request <= result.retrieved_at <= datetime.now(timezone.utc)
 
 
@@ -357,7 +367,7 @@ def test_route_delay_and_incident_delays_remain_independent_provider_fields(monk
             return {"routes": [{
                 "summary": {
                     "travelTimeInSeconds": 79 * 60,
-                    "trafficDelayInSeconds": 16 * 60,
+                    "trafficDelayInSeconds": 17 * 60,
                     "noTrafficTravelTimeInSeconds": 63 * 60,
                 },
                 "sections": [
@@ -374,10 +384,219 @@ def test_route_delay_and_incident_delays_remain_independent_provider_fields(monk
     )
 
     assert result.duration_seconds == 79 * 60
-    assert result.traffic_delay_seconds == 16 * 60
-    assert result.traffic_delay_minutes == 16
+    assert result.traffic_delay_seconds == 17 * 60
+    assert result.traffic_delay_minutes == 17
     assert [section.delay_seconds for section in result.traffic_sections] == [299, 600, 61]
-    assert sum(section.delay_seconds for section in result.traffic_sections) == result.traffic_delay_seconds
+    assert sum(section.delay_seconds for section in result.traffic_sections) != result.traffic_delay_seconds
+
+
+def test_traffic_sections_match_inclusive_boundary_and_keep_missing_data_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]:
+            return {"routes": [{"summary": {"travelTimeInSeconds": 600}, "sections": [
+                {"sectionType": "TRAFFIC", "simpleCategory": "ROAD_WORK", "startPointIndex": 1, "endPointIndex": 2},
+                {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 2, "endPointIndex": 4, "streetName": {"text": "Boundary road"}},
+                {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 3, "endPointIndex": 4, "streetName": {"text": "Unrelated road"}},
+            ]}]}
+
+    monkeypatch.setattr("routing_service.httpx.get", lambda *args, **kwargs: Response())
+    result = TomTomRoutingService(api_key="test-server-key").estimate(
+        LocationSelection(name="A", latitude=1, longitude=2),
+        LocationSelection(name="B", latitude=3, longitude=4),
+    )
+    assert len(result.traffic_sections) == 1
+    section = result.traffic_sections[0]
+    assert section.delay_seconds is None and section.severity is None
+    assert section.road_names == ["Boundary road"]
+    assert section.start_coordinates is None and section.end_coordinates is None
+    assert section.incident_type == "ROAD_WORK"
+
+
+def test_traffic_section_without_a_matching_road_keeps_coordinates_internally(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]:
+            return {"routes": [{"summary": {"travelTimeInSeconds": 600}, "legs": [{"points": [
+                {"latitude": 14.582, "longitude": 121.0579},
+                {"latitude": 14.5791, "longitude": 121.0562},
+                {"latitude": 14.57, "longitude": 121.05},
+            ]}], "sections": [
+                {"sectionType": "TRAFFIC", "startPointIndex": 0, "endPointIndex": 1, "delayInSeconds": 61},
+                {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 2, "endPointIndex": 2, "streetName": {"text": "Unrelated road"}},
+            ]}]}
+
+    monkeypatch.setattr("routing_service.httpx.get", lambda *args, **kwargs: Response())
+    result = TomTomRoutingService(api_key="test-server-key").estimate(
+        LocationSelection(name="A", latitude=1, longitude=2),
+        LocationSelection(name="B", latitude=3, longitude=4),
+    )
+    section = result.traffic_sections[0]
+    assert section.road_names == []
+    assert section.start_coordinates.latitude == 14.582
+    assert section.end_coordinates.longitude == 121.0562
+
+
+def test_reverse_geocode_only_fills_missing_or_ambiguous_roads_and_keeps_fallback_separate() -> None:
+    route = {
+        "legs": [{"points": [
+            {"latitude": 14.50, "longitude": 121.00},
+            {"latitude": 14.51, "longitude": 121.01},
+            {"latitude": 14.52, "longitude": 121.02},
+        ]}],
+        "sections": [
+            {"sectionType": "TRAFFIC", "startPointIndex": 0, "endPointIndex": 0, "simpleCategory": "JAM"},
+            {"sectionType": "TRAFFIC", "startPointIndex": 1, "endPointIndex": 1, "simpleCategory": "ROAD_WORK"},
+            {"sectionType": "TRAFFIC", "startPointIndex": 2, "endPointIndex": 2, "simpleCategory": "JAM"},
+            {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 2, "endPointIndex": 2, "streetName": {"text": "Verified Road"}},
+            {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 1, "endPointIndex": 1, "streetName": {"text": "First candidate"}},
+            {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 1, "endPointIndex": 1, "streetName": {"text": "Second candidate"}},
+        ],
+    }
+    requested: list[tuple[float, float]] = []
+
+    def lookup(coordinate: object) -> str:
+        requested.append((coordinate.latitude, coordinate.longitude))
+        return "Nearby Street"
+
+    traffic = _traffic_sections(route, geocode=lookup)
+    assert requested == [(14.50, 121.00), (14.51, 121.01)]
+    assert traffic[0].road_names == []
+    assert traffic[0].approximate_location == "Nearby Street"
+    assert traffic[0].location_source == "reverse_geocoding"
+    assert traffic[1].road_names == [] and traffic[1].road_numbers == []
+    assert traffic[1].approximate_location == "Nearby Street"
+    assert traffic[1].location_source == "reverse_geocoding"
+    assert traffic[2].road_names == ["Verified Road"]
+    assert traffic[2].approximate_location is None
+    assert traffic[2].location_source == "verified_route_metadata"
+    restored = TrafficSection.model_validate(traffic[0].model_dump(mode="json"))
+    assert restored.approximate_location == "Nearby Street"
+    assert restored.location_source == "reverse_geocoding"
+
+
+def test_reverse_geocode_uses_traffic_section_midpoint_and_skips_missing_coordinates() -> None:
+    route = {
+        "legs": [{"points": [
+            {"latitude": 14.50, "longitude": 121.00},
+            {"latitude": 14.51, "longitude": 121.01},
+            {"latitude": 14.52, "longitude": 121.02},
+        ]}],
+        "sections": [
+            {"sectionType": "TRAFFIC", "startPointIndex": 0, "endPointIndex": 2},
+            {"sectionType": "TRAFFIC", "startPointIndex": 9, "endPointIndex": 10},
+        ],
+    }
+    points: list[tuple[float, float]] = []
+
+    def lookup(point: TrafficCoordinate) -> str:
+        points.append((point.latitude, point.longitude))
+        return "Nearby Road"
+
+    sections = _traffic_sections(route, geocode=lookup)
+    assert points == [(14.51, 121.01)]
+    assert sections[0].approximate_location == "Nearby Road"
+    assert sections[1].approximate_location is None
+    assert sections[1].location_source == "unavailable"
+
+
+def test_reverse_geocode_fallback_request_limit_and_empty_or_timeout_results() -> None:
+    route = {
+        "legs": [{"points": [{"latitude": 14.5 + i / 100, "longitude": 121 + i / 100} for i in range(5)]}],
+        "sections": [{"sectionType": "TRAFFIC", "startPointIndex": i, "endPointIndex": i} for i in range(5)],
+    }
+    calls: list[int] = []
+
+    def lookup(_coordinate: object) -> None:
+        calls.append(1)
+        if len(calls) == 2:
+            raise httpx.ReadTimeout("sanitized test timeout")
+        return None
+
+    traffic = _traffic_sections(route, geocode=lookup, request_limit=3)
+    assert len(calls) == 3
+    assert all(section.approximate_location is None for section in traffic)
+    assert all(section.location_source == "unavailable" for section in traffic)
+
+
+def test_reverse_geocoder_uses_server_key_short_timeout_and_caches_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _reverse_geocode_cache_lock:
+        _reverse_geocode_cache.clear()
+
+
+def test_reverse_geocoder_caches_empty_results_and_timeouts_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _reverse_geocode_cache_lock:
+        _reverse_geocode_cache.clear()
+    calls = 0
+
+    class EmptyResponse:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]: return {"addresses": []}
+
+    def fake_get(url: str, **kwargs: object) -> EmptyResponse:
+        nonlocal calls
+        calls += 1
+        if ",121.01.json" in url:
+            raise httpx.ReadTimeout("test timeout")
+        return EmptyResponse()
+
+    monkeypatch.setattr("routing_service.httpx.get", fake_get)
+    from schemas import TrafficCoordinate
+    empty_point = TrafficCoordinate(latitude=14.5, longitude=121.0)
+    timeout_point = TrafficCoordinate(latitude=14.51, longitude=121.01)
+    assert _reverse_geocode_location(empty_point, "test-server-key") is None
+    assert _reverse_geocode_location(empty_point, "test-server-key") is None
+    assert _reverse_geocode_location(timeout_point, "test-server-key") is None
+    assert _reverse_geocode_location(timeout_point, "test-server-key") is None
+    assert calls == 2
+    with _reverse_geocode_cache_lock:
+        _reverse_geocode_cache.clear()
+    calls: list[tuple[str, dict[str, object], float]] = []
+
+    class Response:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]:
+            return {"addresses": [{"address": {"streetName": "Ortigas Avenue", "streetNumber": "42"}}]}
+
+    def fake_get(url: str, *, params: dict[str, object], timeout: float) -> Response:
+        calls.append((url, params, timeout))
+        return Response()
+
+    monkeypatch.setattr("routing_service.httpx.get", fake_get)
+    coordinate = LocationSelection(name="route point", latitude=14.582, longitude=121.0579)
+    from schemas import TrafficCoordinate
+    point = TrafficCoordinate(latitude=coordinate.latitude, longitude=coordinate.longitude)
+    assert _reverse_geocode_location(point, "test-server-key") == "Ortigas Avenue"
+    assert _reverse_geocode_location(point, "test-server-key") == "Ortigas Avenue"
+    assert len(calls) == 1
+    url, params, timeout = calls[0]
+    assert url.endswith("/14.582,121.0579.json")
+    assert params["key"] == "test-server-key"
+    assert params["radius"] == "50"
+    assert timeout <= 2.0
+    with _reverse_geocode_cache_lock:
+        _reverse_geocode_cache.clear()
+
+
+def test_manual_refresh_diagnostics_log_sanitized_nearby_road_metadata(caplog: pytest.LogCaptureFixture) -> None:
+    route = {"legs": [{"points": [
+        {"latitude": 14.582, "longitude": 121.0579},
+        {"latitude": 14.5791, "longitude": 121.0562},
+    ]}], "sections": [
+        {"sectionType": "TRAFFIC", "startPointIndex": 10, "endPointIndex": 12, "delayInSeconds": 61},
+        {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 8, "endPointIndex": 9, "streetName": {"text": "Nearby Road"}, "roadNumbers": [{"text": "R7"}]},
+        {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 13, "endPointIndex": 14, "streetName": {"text": "Beyond Range"}},
+    ]}
+    with caplog.at_level("INFO", logger="routing_service"):
+        sections = _traffic_sections(route, diagnose_unnamed=True)
+
+    assert sections[0].road_names == []
+    diagnostic = " ".join(record.getMessage() for record in caplog.records)
+    assert "traffic_indexes=10-12" in diagnostic
+    assert "Nearby Road" in diagnostic and "R7" in diagnostic
+    assert "nearest_road_metadata_does_not_overlap" in diagnostic
+    assert "Beyond Range" in diagnostic
+    assert "14.582" not in diagnostic and "121.0579" not in diagnostic
 
 
 @pytest.mark.parametrize(("summary", "status", "delay"), [

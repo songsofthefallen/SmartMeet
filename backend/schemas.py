@@ -182,8 +182,23 @@ class LocationSelection(BaseModel):
 
 class TrafficSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    severity: Annotated[str, StringConstraints(pattern="^(little_or_no_delay|some_delay|significant_delay)$")]
-    delay_seconds: int = Field(ge=0)
+    severity: Annotated[str, StringConstraints(pattern="^(little_or_no_delay|some_delay|significant_delay)$")] | None = None
+    delay_seconds: int | None = Field(default=None, ge=0)
+    start_point_index: int | None = Field(default=None, ge=0)
+    end_point_index: int | None = Field(default=None, ge=0)
+    road_names: list[Annotated[str, StringConstraints(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=10)
+    road_numbers: list[Annotated[str, StringConstraints(min_length=1, max_length=40)]] = Field(default_factory=list, max_length=10)
+    approximate_location: Annotated[str, StringConstraints(min_length=1, max_length=200)] | None = None
+    location_source: Annotated[str, StringConstraints(pattern="^(verified_route_metadata|reverse_geocoding|unavailable)$")] = "unavailable"
+    incident_type: Annotated[str, StringConstraints(pattern="^(JAM|ROAD_WORK|ROAD_CLOSURE|OTHER)$")] | None = None
+    start_coordinates: "TrafficCoordinate | None" = None
+    end_coordinates: "TrafficCoordinate | None" = None
+
+
+class TrafficCoordinate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
 
 
 class WeatherPointForecast(BaseModel):

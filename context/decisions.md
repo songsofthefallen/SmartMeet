@@ -145,3 +145,34 @@
 - Decision: Continue assessing Open-Meteo weather at the selected origin near deterministic departure and destination near deterministic arrival. Apply Spec 14's rain, snow, wind, and thunderstorm thresholds as endpoint advisories with the condition and forecast hour. Never pass a weather value into time calculation. Preserve route duration, traffic data, and user-configured travel/preparation buffers. Show unavailable weather distinctly from no detected concerns; explain endpoint-only coverage and use cautious language that conditions may affect a trip.
 - Persistence: Keep the nullable schedule JSON field. New assessments store advisories and forecast details without weather-buffer values. Read legacy buffer/timing fields for compatibility but exclude them from new API responses. No migration or deletion of old JSON data is required.
 - Tradeoffs: Forecasts remain hourly, limited to selected endpoints, and unavailable outside provider coverage. An advisory may miss conditions elsewhere on the route and is not a delay estimate or guarantee.
+
+## DEC-024 - Traffic-affected route portions use provider section indexes
+- Status: Confirmed direction
+- Context: Aggregate route delay alone does not explain where traffic reports occur, but section delay values are incident details and are not a decomposition of aggregate route delay.
+- Decision: Request TomTom `TRAFFIC` and `IMPORTANT_ROAD_STRETCH` sections with polyline representation. Associate road names/numbers only where their inclusive route point-index ranges overlap a traffic section; use indexed route points as approximate coordinates when available. Preserve each provider incident's delay and category separately from `summary.trafficDelayInSeconds`. Missing road, coordinate, category, or delay fields remain unavailable, and an empty section list is described only as no affected portions reported for that estimate.
+- Persistence/UI: Keep enriched sections inside the existing travel-estimate JSON value. Render a list in the existing schedule detail view; no schema migration or map dependency is needed. The UI has no route map, and no map highlighting is implemented.
+- Tradeoffs: TomTom may omit road stretches, point indexes, geometry, or incident values by route or region. The display can therefore identify only the most specific provider-verified information in each response and is not a full-route inventory. A reverse-geocoded nearby address is not necessarily the affected road, so the app does not automatically make per-section reverse-geocoding calls.
+
+## DEC-025 - Traffic display groups sections by verified road labels
+- Status: Confirmed direction
+- Context: A route can report multiple traffic sections on the same road, while each section remains a distinct traffic event. TomTom road-number text may contain multiple values, including numeric-only strings whose local significance is unclear without country-specific context.
+- Decision: Group traffic sections by normalized provider road-name identity, but preserve every section as a separate event and retain its incident type and delay. Keep unnamed sections in a separate `Road name unavailable` group. Display the road name as the primary label and only alphanumeric road-number designations as secondary labels; suppress numeric-only strings in the UI while retaining all original values in backend estimate data.
+- Tradeoffs: The grouping identifies the road, not whether incidents at different positions are the same physical event. It must not collapse events or aggregate their delay values. The display filter is intentionally conservative and may omit valid numeric-only road-number text.
+
+## DEC-026 - Per-road incident-delay summaries remain descriptive
+- Status: Confirmed direction
+- Context: Users need a concise summary of provider-reported incident delays while preserving the independently calculated route-level traffic delay.
+- Decision: Keep every traffic section as an individual incident within its verified-road group. Show the count and type breakdown, and sum only valid nonnegative integer incident delays (including zero). If any event delay is absent or invalid, mark the group sum incomplete and disclose the unavailable count; do not silently count unknown values as zero. Label the sum as combined reported incident delays and state that it is not additional travel time or a decomposition of the route-level delay.
+- Tradeoffs: Provider incident reports can overlap or describe portions of conditions reflected in the overall route estimate. Their combined duration is informational and must not be used for schedule calculations.
+
+## DEC-027 - Reverse-geocoded traffic locations remain approximate
+- Status: Confirmed direction
+- Context: TomTom can provide coordinates for a traffic section without a reliable `IMPORTANT_ROAD_STRETCH` road-name association.
+- Decision: Keep route metadata as the only source of verified road names. For sections with no road name or conflicting overlapping road names, optionally call TomTom Search API v2 reverse geocoding at a route-section midpoint. Store the returned street name separately from `road_names`, mark its source as reverse geocoding, and display it only as “Near …” with an “Approximate location” label. Never use this label as a road-group identity. Bound calls per route estimate, use a short timeout and radius, and cache results including misses; lookup failures leave the location unavailable without failing routing.
+- Tradeoffs: The reverse geocoder identifies a nearby street at a coordinate and cannot prove that it is the affected road. The process-local cache is lost on restart and does not deduplicate simultaneous lookups across workers; per-estimate caps keep provider use bounded.
+
+## DEC-028 - Approximate traffic locations may group unnamed incidents
+- Status: Confirmed direction
+- Context: An incident can have a useful reverse-geocoded location even when TomTom has no reliable road-name match for the traffic section.
+- Decision: Use verified route road names as the primary grouping key. If absent, group by the normalized reverse-geocoded label, render it as “Near …”, and visibly mark the group as approximate. Keep fallback text in its own schema field and never promote it to verified road metadata. Unresolved sections remain in `Road name unavailable`; delay totals continue to aggregate individual incident reports within each display group.
+- Tradeoffs: Grouping by nearby reverse-geocoded text means incidents at separate points on a long road may share a display group. Each incident remains individually listed and no incident identity is inferred from the group.

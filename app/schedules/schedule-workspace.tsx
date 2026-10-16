@@ -2,15 +2,17 @@
 
 import { useAuth, UserButton } from "@clerk/nextjs";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { scheduleApi, ScheduleApiError, type LocationSelection, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent, type ScheduleUpdateInput } from "@/lib/schedule-api";
+import { scheduleApi, ScheduleApiError, type LocationSelection, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent, type ScheduleUpdateInput, type TrafficSectionEstimate } from "@/lib/schedule-api";
 import { clarificationQuestions } from "@/lib/clarification-messages";
 import { localDateTimeFromExtraction, localTimeInputFromExtraction } from "@/lib/schedule-extraction-time";
 import { isAssistantAutosaveEligible } from "@/lib/assistant-autosave";
-import { formatTrafficDelay, isTrafficEstimateStale, routeTimeBasisLabel, trafficStatusLabel } from "@/lib/traffic-display.js";
+import { formatTrafficDelay, groupTrafficSections, isTrafficEstimateStale, routeTimeBasisLabel, trafficIncidentDetails, trafficStatusLabel } from "@/lib/traffic-display.js";
 import { arrivalPreparationNote, suggestedTimeRows } from "@/lib/suggested-times.js";
+import { upsertScheduleNewestFirst } from "@/lib/schedule-order.js";
 
 type FormValues = Omit<ScheduleInput, "target_datetime" | "time_intent" | "preparation_duration_minutes" | "title"> & { title: string; target_datetime: string; time_intent: ScheduleIntent | ""; preparation_duration_minutes: number | null };
 type Notice = { kind: "success" | "error"; text: string };
+type TrafficRoadGroup = { identity: string; road_name: string; is_approximate_location: boolean; route_designations: string[]; events: TrafficSectionEstimate[]; incident_count: number; incident_type_counts: { label: string; count: number }[]; combined_delay_seconds: number | null; known_delay_seconds: number; unavailable_delay_count: number; delay_total_complete: boolean };
 
 const fallbackTimeZones = [
   "Africa/Cairo", "America/Anchorage", "America/Chicago", "America/Denver", "America/Los_Angeles",
@@ -405,7 +407,7 @@ export default function ScheduleWorkspace() {
         : await scheduleApi.update(editingId, updateInput, token);
       setLoadError(false);
       setSchedules((items) => editingId === null
-        ? [...items, saved]
+        ? upsertScheduleNewestFirst(items, saved)
         : items.map((item) => item.id === saved.id ? saved : item));
       setSelectedId(saved.id);
       setSelectedSchedule(saved);
@@ -551,7 +553,7 @@ export default function ScheduleWorkspace() {
                   <p className="mt-1 text-sm font-semibold">{trafficStatusLabel(selected.traffic_status)}</p>
                   {selected.traffic_delay_minutes !== null && <p className="mt-1 text-sm text-[var(--text-secondary)]">Estimated route-level traffic delay: {selected.traffic_delay_minutes} min</p>}
                   <p className="mt-1 text-xs text-[var(--text-muted)]">{routeTimeBasisLabel(selected.travel_estimate.route_time_basis)}. Retrieved {formatDate(selected.travel_estimate.retrieved_at, selected.timezone)}.</p>
-                  {selected.travel_estimate.traffic_sections.length > 0 && <div className="mt-3 border-t border-[var(--border)] pt-3"><h4 className="text-xs font-semibold">Traffic-affected route portions</h4><ul className="mt-1 space-y-1">{selected.travel_estimate.traffic_sections.map((section, index) => <li key={`${section.severity}-${section.delay_seconds}-${index}`} className="text-sm">{trafficStatusLabel(section.severity)} · {formatTrafficDelay(section.delay_seconds)} incident delay</li>)}</ul><p className="mt-2 text-xs text-[var(--text-muted)]">TomTom reports these incident delays separately from route-level traffic delay; they are not a breakdown guaranteed to sum to the route total.</p></div>}
+                  <div className="mt-3 border-t border-[var(--border)] pt-3"><h4 className="text-sm font-semibold">Traffic along your route</h4>{selected.travel_estimate.traffic_sections.length > 0 ? <><div className="mt-2 space-y-3">{groupTrafficSections(selected.travel_estimate.traffic_sections).map((group: TrafficRoadGroup) => <section key={group.identity} className="rounded-lg border border-[var(--border)] p-3"><div className="flex flex-wrap items-center gap-2"><h5 className="text-sm font-semibold">{group.road_name}</h5>{group.is_approximate_location && <span className="rounded-full border border-[var(--border)] bg-[var(--surface-secondary)] px-2 py-0.5 text-xs text-[var(--text-muted)]">Approximate location</span>}</div>{group.route_designations.length > 0 && <p className="mt-1 text-xs text-[var(--text-muted)]">Route designations: {group.route_designations.join(" · ")}</p>}<p className="mt-2 text-sm text-[var(--text-secondary)]"><span className="font-medium">{group.incident_count} {group.incident_count === 1 ? "incident" : "incidents"}</span> · {group.incident_type_counts.map(({ label, count }) => `${count} ${label.toLocaleLowerCase()}`).join(" · ")}</p><p className="mt-1 text-sm text-[var(--text-secondary)]"><span className="font-medium">Combined reported incident delays:</span> {group.delay_total_complete ? formatTrafficDelay(group.combined_delay_seconds) : `Incomplete (${group.unavailable_delay_count} incident ${group.unavailable_delay_count === 1 ? "delay is" : "delays are"} unavailable${group.known_delay_seconds > 0 ? `; known reports total ${formatTrafficDelay(group.known_delay_seconds)}` : ""})`}</p><details className="mt-2"><summary className="cursor-pointer text-sm font-medium text-[var(--brand-primary)]">Incident details ({group.incident_count})</summary><ul className="mt-2 space-y-2">{group.events.map((section: TrafficSectionEstimate, index: number) => { const details = trafficIncidentDetails(section, group); return details ? <li key={index} className="border-t border-[var(--border)] pt-2 text-sm"><p className="font-medium text-[var(--text-secondary)]">{details.incident_type_label}</p>{details.location_label && <p className="mt-1 text-[var(--text-secondary)]">{details.location_label}</p>}<p className="mt-1 text-[var(--text-secondary)]">Reported incident delay: {details.reported_delay_label}</p></li> : null; })}</ul></details></section>)}</div><p className="mt-2 text-xs text-[var(--text-muted)]">Combined reported incident delays are provider incident figures. They do not represent additional travel time or a breakdown of the route-level traffic delay. Locations marked approximate are nearby reverse-geocoding results and do not confirm the affected road.</p></> : <p className="mt-1 text-sm text-[var(--text-muted)]">TomTom reported no traffic-affected portions for this estimate.</p>}</div>
                 </>}
                 {!selected.travel_estimate && <p className="mt-1 text-sm text-[var(--text-muted)]">Traffic status unavailable.</p>}
                 {selected.status === "active" && selected.origin_location && selected.location && <div className="mt-3 flex flex-wrap items-center gap-3"><button type="button" className={secondaryButton} disabled={routeRefreshingId !== null || (routeCooldowns[selected.id] ?? 0) > clockNow} onClick={() => void refreshRouteEstimate(selected)}><RefreshIcon />{routeRefreshingId === selected.id ? "Refreshing..." : "Refresh estimate"}</button>{(routeCooldowns[selected.id] ?? 0) > clockNow && <span className="text-xs text-[var(--text-muted)]" role="status">Refresh available in {Math.ceil((routeCooldowns[selected.id] - clockNow) / 1000)}s</span>}</div>}

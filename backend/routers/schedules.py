@@ -73,7 +73,12 @@ def _refresh_route(schedule: Schedule, service: TomTomRoutingService | None) -> 
     schedule.travel_duration_minutes = estimate.duration_minutes
 
 
-def _route_estimate(schedule: Schedule, service: TomTomRoutingService) -> TravelEstimate:
+def _route_estimate(
+    schedule: Schedule,
+    service: TomTomRoutingService,
+    *,
+    diagnose_unnamed_traffic_sections: bool = False,
+) -> TravelEstimate:
     target = schedule.target_datetime
     if target.tzinfo is None or target.utcoffset() is None:
         target = target.replace(tzinfo=timezone.utc)
@@ -87,6 +92,7 @@ def _route_estimate(schedule: Schedule, service: TomTomRoutingService) -> Travel
     return service.estimate(
         LocationSelection.model_validate(schedule.origin_location),
         LocationSelection.model_validate(schedule.location),
+        diagnose_unnamed_traffic_sections=diagnose_unnamed_traffic_sections,
         **route_time_args,
     )
 
@@ -398,7 +404,7 @@ def refresh_travel_estimate(
     try:
         if routing is None:
             raise RoutingProviderConfigurationError
-        estimate = _route_estimate(schedule, routing)
+        estimate = _route_estimate(schedule, routing, diagnose_unnamed_traffic_sections=True)
     except (RoutingProviderError, RoutingProviderConfigurationError, ValueError) as exc:
         finish_attempt(db, attempt.id, "failed")
         raise HTTPException(status_code=502, detail="The route estimate could not be refreshed. Your saved estimate was kept.") from exc
