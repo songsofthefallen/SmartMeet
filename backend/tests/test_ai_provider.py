@@ -180,3 +180,44 @@ def test_client_maps_timeouts_to_safe_provider_error() -> None:
         with pytest.raises(AIProviderError, match="timed out") as error:
             OpenRouterClient(settings(), http_client=http).complete_structured([], Extracted)
     assert "private details" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "category"),
+    [
+        (401, "authentication"),
+        (403, "authentication"),
+        (429, "rate_limit"),
+        (408, "timeout"),
+        (504, "timeout"),
+        (500, "provider_error"),
+    ],
+)
+def test_client_classifies_upstream_status_without_retaining_response_body(
+    status_code: int, category: str,
+) -> None:
+    def provider_error(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, text="private provider response body")
+
+    with httpx.Client(transport=httpx.MockTransport(provider_error)) as http:
+        with pytest.raises(AIProviderError) as error:
+            OpenRouterClient(settings(), http_client=http).complete_structured([], Extracted)
+
+    assert error.value.category == category
+    assert error.value.exception_class == "HTTPStatusError"
+    assert error.value.upstream_status_code == status_code
+    assert "private provider response body" not in str(error.value)
+
+
+def test_client_classifies_transport_timeout_by_exception_class() -> None:
+    def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("private timeout details", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(timeout)) as http:
+        with pytest.raises(AIProviderError) as error:
+            OpenRouterClient(settings(), http_client=http).complete_structured([], Extracted)
+
+    assert error.value.category == "timeout"
+    assert error.value.exception_class == "ReadTimeout"
+    assert error.value.upstream_status_code is None
+    assert "private timeout details" not in str(error.value)

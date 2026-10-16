@@ -7,12 +7,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from database import get_db
 from main import verify_clerk_token
-from models import RouteRefreshAttempt, Schedule, ScheduleStatus
+from models import RouteRefreshAttempt, Schedule, ScheduleNameCounter, ScheduleStatus
 from schemas import LocationSelection, ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate, WeatherAssessmentDiagnostic, WeatherEstimate
 from routing_service import RoutingProviderConfigurationError, RoutingProviderError, TomTomRoutingService
 from time_calculation import CalculationSettings, calculate_schedule_times, recalculate_schedule
@@ -104,12 +106,54 @@ def _owned_schedule(db: Session, schedule_id: int, user_id: str) -> Schedule:
 def _commit(db: Session) -> None:
     try:
         db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A schedule with this name already exists in your account.",
+        ) from exc
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to save schedule",
         ) from exc
+
+
+def _normalized_title(title: str) -> str:
+    normalized = title.strip().casefold()
+    if len(normalized) > 200:
+        raise HTTPException(status_code=422, detail="Title is too long after normalization")
+    return normalized
+
+
+def _next_schedule_title(db: Session, user_id: str) -> str:
+    """Allocate a name while holding this user's counter row until commit."""
+    dialect = db.get_bind().dialect.name
+    if dialect == "mysql":
+        insert = mysql_insert(ScheduleNameCounter).values(clerk_user_id=user_id, next_number=1)
+        db.execute(insert.on_duplicate_key_update(clerk_user_id=insert.inserted.clerk_user_id))
+    elif dialect == "sqlite":
+        insert = sqlite_insert(ScheduleNameCounter).values(clerk_user_id=user_id, next_number=1)
+        db.execute(insert.on_conflict_do_nothing(index_elements=["clerk_user_id"]))
+    else:
+        if db.get(ScheduleNameCounter, user_id) is None:
+            db.add(ScheduleNameCounter(clerk_user_id=user_id, next_number=1))
+            db.flush()
+    counter = db.scalar(
+        select(ScheduleNameCounter)
+        .where(ScheduleNameCounter.clerk_user_id == user_id)
+        .with_for_update()
+    )
+    assert counter is not None
+    number = counter.next_number
+    while db.scalar(select(Schedule.id).where(
+        Schedule.clerk_user_id == user_id,
+        Schedule.normalized_title == _normalized_title(f"Schedule {number}"),
+    )) is not None:
+        number += 1
+    counter.next_number = number + 1
+    return f"Schedule {number}"
 
 
 def _calculate(schedule: Schedule) -> Schedule:
@@ -126,95 +170,53 @@ WeatherService = Annotated[OpenMeteoWeatherService, Depends(get_weather_service)
 
 def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> None:
     if not schedule.origin_location or not schedule.location or schedule.travel_duration_minutes is None:
-        schedule.weather_estimate = {"status": "unavailable", "summary": "Forecast unavailable; no weather buffer applied.", "buffer_minutes": 0, "retrieved_at": None, "forecast_at": None, "conditions": []}
+        schedule.weather_estimate = {
+            "status": "unavailable",
+            "summary": "Weather information is temporarily unavailable.",
+            "retrieved_at": None,
+            "forecast_at": None,
+            "conditions": [],
+            "advisories": [],
+        }
         return
     target = schedule.target_datetime
     if target.tzinfo is None or target.utcoffset() is None:
         target = target.replace(tzinfo=timezone.utc)
     target = target.astimezone(timezone.utc)
-    base = CalculationSettings.from_env()
     origin = LocationSelection.model_validate(schedule.origin_location)
     destination = LocationSelection.model_validate(schedule.location)
-
-    def calculate(weather_buffer_minutes: int):
-        return calculate_schedule_times(
-            time_intent=schedule.time_intent,
-            target_datetime=target,
-            timezone_name=schedule.timezone,
-            travel_duration_minutes=schedule.travel_duration_minutes,
-            preparation_duration_minutes=schedule.preparation_duration_minutes,
-            settings=base,
-            weather_buffer_minutes=weather_buffer_minutes,
-        )
-
-    initial_times = calculate(0)
-    assert initial_times.departure_time is not None and initial_times.arrival_time is not None
-    try:
-        first = WeatherEstimate.model_validate(service.assess(
-            origin, destination, initial_times.departure_time, initial_times.arrival_time, assessment_pass=1,
-        ))
-    except Exception:
-        first = WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
-        first._diagnostic = WeatherAssessmentDiagnostic(
-            reason="invalid_response_values", assessment_pass=1,
-            origin_forecast_hour=initial_times.departure_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
-            destination_forecast_hour=initial_times.arrival_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
-        )
-    if first.status != "available" or first.buffer_minutes == 0:
-        if first.status != "available":
-            _log_weather_failure(first, assessment_pass=1)
-        schedule.weather_estimate = first.model_dump(mode="json")
-        return
-
-    # One bounded follow-up assessment aligns the endpoint forecasts with the
-    # first-pass weather-adjusted schedule. No further request is made if this
-    # assessment changes the weather buffer.
-    interim_times = calculate(first.buffer_minutes)
-    assert interim_times.departure_time is not None and interim_times.arrival_time is not None
-    try:
-        second = WeatherEstimate.model_validate(service.assess(
-            origin, destination, interim_times.departure_time, interim_times.arrival_time, assessment_pass=2,
-        ))
-    except Exception:
-        second = WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
-        second._diagnostic = WeatherAssessmentDiagnostic(
-            reason="invalid_response_values", assessment_pass=2,
-            origin_forecast_hour=interim_times.departure_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
-            destination_forecast_hour=interim_times.arrival_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
-        )
-    if second.status != "available":
-        _log_weather_failure(second, assessment_pass=2, second_pass=True)
-        # The final forecast-time lookup failed. Fall back to no weather buffer;
-        # this returns the schedule to the initial times assessed in pass one.
-        schedule.weather_estimate = second.model_dump(mode="json")
-        return
-
-    applied_buffer = max(first.buffer_minutes, second.buffer_minutes)
-    conditions = list(dict.fromkeys([*first.conditions, *second.conditions]))[:10]
-    summary = (
-        "Forecast conditions may affect travel time."
-        if applied_buffer > 0
-        else "No extra time needed based on the forecast at your origin and destination."
+    # Weather only observes the deterministic schedule times; it never changes them.
+    times = calculate_schedule_times(
+        time_intent=schedule.time_intent,
+        target_datetime=target,
+        timezone_name=schedule.timezone,
+        travel_duration_minutes=schedule.travel_duration_minutes,
+        preparation_duration_minutes=schedule.preparation_duration_minutes,
+        settings=CalculationSettings.from_env(),
     )
-    timing_note = None
-    if second.buffer_minutes > first.buffer_minutes:
-        timing_note = (
-            "The second forecast indicated a larger buffer. Final times use that stronger buffer and may differ "
-            "from the bounded second-pass sample time; no third lookup was made."
+    if times.departure_time is None or times.arrival_time is None:
+        schedule.weather_estimate = {
+            "status": "unavailable", "summary": "Weather information is temporarily unavailable.",
+            "retrieved_at": None, "forecast_at": None, "conditions": [], "advisories": [],
+        }
+        return
+    try:
+        estimate = WeatherEstimate.model_validate(service.assess(
+            origin, destination, times.departure_time, times.arrival_time,
+        ))
+    except Exception:
+        estimate = WeatherEstimate(
+            status="unavailable", summary="Weather information is temporarily unavailable.",
+            retrieved_at=None,
         )
-    schedule.weather_estimate = WeatherEstimate(
-        status="available",
-        summary=summary,
-        buffer_minutes=applied_buffer,
-        retrieved_at=second.retrieved_at,
-        forecast_at=second.origin_forecast_at or second.forecast_at,
-        origin_forecast_at=second.origin_forecast_at or second.forecast_at,
-        destination_forecast_at=second.destination_forecast_at,
-        timing_note=timing_note,
-        origin_weather=second.origin_weather,
-        destination_weather=second.destination_weather,
-        conditions=conditions,
-    ).model_dump(mode="json")
+        estimate._diagnostic = WeatherAssessmentDiagnostic(
+            reason="invalid_response_values", assessment_pass=1,
+            origin_forecast_hour=times.departure_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
+            destination_forecast_hour=times.arrival_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
+        )
+    if estimate.status != "available":
+        _log_weather_failure(estimate, assessment_pass=1)
+    schedule.weather_estimate = estimate.model_dump(mode="json", exclude={"buffer_minutes", "timing_note"})
 
 
 def _log_weather_failure(
@@ -258,7 +260,10 @@ def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser
         ))
         if existing is not None:
             return _calculate(existing)
-    schedule = Schedule(clerk_user_id=user_id, **payload.model_dump())
+    values = payload.model_dump()
+    requested_title = values.pop("title")
+    title = requested_title or _next_schedule_title(db, user_id)
+    schedule = Schedule(clerk_user_id=user_id, title=title, normalized_title=_normalized_title(title), **values)
     if schedule.origin_location is not None and schedule.location is not None and schedule.travel_duration_minutes is None:
         _refresh_route(schedule, routing)
     _refresh_weather(schedule, weather)
@@ -266,7 +271,7 @@ def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser
     db.add(schedule)
     try:
         _commit(db)
-    except HTTPException:
+    except HTTPException as exc:
         if payload.idempotency_key:
             db.rollback()
             existing = db.scalar(select(Schedule).where(
@@ -275,6 +280,8 @@ def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser
             ))
             if existing is not None:
                 return _calculate(existing)
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            raise
         raise
     try:
         db.refresh(schedule)
@@ -325,6 +332,8 @@ def update_schedule(
         old_destination = schedule.location
         for field, value in payload.model_dump(exclude_unset=True).items():
             setattr(schedule, field, value)
+        if "title" in payload.model_fields_set:
+            schedule.normalized_title = _normalized_title(schedule.title)
         route_inputs_changed = schedule.origin_location != old_origin or schedule.location != old_destination
         duration_cleared = (
             "travel_duration_minutes" in payload.model_fields_set

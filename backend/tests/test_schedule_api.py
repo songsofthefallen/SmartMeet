@@ -1,8 +1,13 @@
 import time
 import json
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
 from collections.abc import Generator
 from datetime import datetime, timezone
 import jwt
+import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -13,15 +18,18 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from ai_provider import AISettings, OpenRouterClient
 from database import get_db
 from extraction_schemas import (
     ExtractionReviewStatus,
     ScheduleExtraction,
     ScheduleExtractionReview,
 )
-from extraction_service import ScheduleExtractionError
+from extraction_service import ScheduleExtractionError, ScheduleExtractionService
 from main import app
 from models import Base, Schedule
+from routers.schedules import create_schedule
+from schemas import ScheduleCreate
 from routers.extraction import get_extraction_service
 from routers.schedules import get_weather_service
 from schemas import WeatherEstimate
@@ -111,7 +119,7 @@ class StubExtractionService:
 
 class OfflineWeather:
     def assess(self, *args: object, **kwargs: object) -> WeatherEstimate:
-        return WeatherEstimate(status="unavailable", summary="Forecast unavailable; no weather buffer applied.", buffer_minutes=0, retrieved_at=None)
+        return WeatherEstimate(status="unavailable", summary="Weather information is temporarily unavailable.", retrieved_at=None)
 
 
 def extraction_review(*, missing_intent: bool = False) -> ScheduleExtractionReview:
@@ -119,7 +127,6 @@ def extraction_review(*, missing_intent: bool = False) -> ScheduleExtractionRevi
         json.dumps(
             {
                 "is_schedule_request": True,
-                "title": "Morning class",
                 "time_intent": None if missing_intent else "arrival",
                 "target_date_local": "2026-10-12",
                 "target_time_local": "07:00:00",
@@ -179,6 +186,93 @@ def test_schedule_crud_and_cancel(api_db: None, signing_key: str) -> None:
     cancelled = client.post(f"/schedules/{schedule_id}/cancel", headers=headers)
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+
+
+def test_default_names_are_sequential_per_user_and_not_reused_after_delete(api_db: Engine, signing_key: str) -> None:
+    client = TestClient(app)
+    first_payload = payload()
+    first_payload.pop("title")
+    first = client.post("/schedules", headers=bearer(signing_key), json=first_payload)
+    second = client.post("/schedules", headers=bearer(signing_key), json=first_payload)
+    other_user = client.post("/schedules", headers=bearer(signing_key, "user_beta"), json=first_payload)
+    assert [first.json()["title"], second.json()["title"], other_user.json()["title"]] == [
+        "Schedule 1", "Schedule 2", "Schedule 1"
+    ]
+    with Session(api_db) as db:
+        db.delete(db.get(Schedule, second.json()["id"]))
+        db.commit()
+    third = client.post("/schedules", headers=bearer(signing_key), json=first_payload)
+    assert third.status_code == 201
+    assert third.json()["title"] == "Schedule 3"
+
+
+def test_duplicate_names_are_case_insensitive_and_rename_conflicts_are_rejected(api_db: None, signing_key: str) -> None:
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    first = client.post("/schedules", headers=headers, json=payload(title="  Team Plan  "))
+    assert first.status_code == 201
+    own_rename = client.patch(f"/schedules/{first.json()['id']}", headers=headers, json={"title": "team plan"})
+    assert own_rename.status_code == 200
+    duplicate = client.post("/schedules", headers=headers, json=payload(title=" TEAM PLAN "))
+    assert duplicate.status_code == 409
+    second = client.post("/schedules", headers=headers, json=payload(title="Other"))
+    conflict = client.patch(f"/schedules/{second.json()['id']}", headers=headers, json={"title": "TEAM PLAN"})
+    assert conflict.status_code == 409
+    assert "name already exists" in conflict.json()["detail"]
+    allowed_for_other_user = client.post(
+        "/schedules", headers=bearer(signing_key, "user_beta"), json=payload(title="team plan")
+    )
+    assert allowed_for_other_user.status_code == 201
+
+
+def test_idempotent_retry_keeps_generated_name(api_db: None, signing_key: str) -> None:
+    client = TestClient(app)
+    request = payload(idempotency_key="retry-key-00000001")
+    request.pop("title")
+    first = client.post("/schedules", headers=bearer(signing_key), json=request)
+    retried = client.post("/schedules", headers=bearer(signing_key), json=request)
+    assert first.status_code == retried.status_code == 201
+    assert first.json()["id"] == retried.json()["id"]
+    assert first.json()["title"] == retried.json()["title"] == "Schedule 1"
+
+
+def test_invalid_creation_does_not_consume_a_default_name(api_db: None, signing_key: str) -> None:
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    invalid = payload()
+    invalid.pop("title")
+    invalid["timezone"] = "Not/A_Timezone"
+    assert client.post("/schedules", headers=headers, json=invalid).status_code == 422
+    valid = payload()
+    valid.pop("title")
+    saved = client.post("/schedules", headers=headers, json=valid)
+    assert saved.status_code == 201
+    assert saved.json()["title"] == "Schedule 1"
+
+
+def test_concurrent_default_creations_get_distinct_sequential_names() -> None:
+    temp_file = tempfile.NamedTemporaryFile(suffix=".sqlite", dir=Path(__file__).parents[1], delete=False)
+    temp_file.close()
+    engine = create_engine(f"sqlite:///{Path(temp_file.name).as_posix()}", connect_args={"timeout": 10})
+    Base.metadata.create_all(engine)
+    request = payload()
+    request.pop("title")
+    parsed = ScheduleCreate.model_validate(request)
+    barrier = Barrier(2)
+
+    def create_one() -> str:
+        with Session(engine, autoflush=False, expire_on_commit=False) as db:
+            barrier.wait()
+            schedule = create_schedule(parsed, db, "user_concurrent", None, OfflineWeather())
+            return schedule.title
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            names = sorted(pool.map(lambda _index: create_one(), range(2)))
+        assert names == ["Schedule 1", "Schedule 2"]
+    finally:
+        engine.dispose()
+        Path(temp_file.name).unlink(missing_ok=True)
 
 
 def test_schedule_list_orders_by_creation_time_then_id(api_db: Engine, signing_key: str) -> None:
@@ -294,6 +388,77 @@ def test_extraction_endpoint_returns_structured_clarification(
     assert response.json()["status"] == "needs_clarification"
     assert response.json()["missing_fields"] == ["time_intent"]
     assert "time_intent" in response.json()["ambiguous_fields"]
+
+
+def test_extraction_endpoint_parses_title_free_provider_response(
+    api_db: None, signing_key: str
+) -> None:
+    extracted = {
+        "is_schedule_request": True,
+        "time_intent": "arrival",
+        "target_date_local": "2026-10-20",
+        "target_time_local": "07:00:00",
+        "timezone": "Asia/Manila",
+        "preparation_duration_minutes": None,
+        "travel_duration_minutes": None,
+        "time_intent_ambiguous": False,
+        "ambiguities": [],
+    }
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(extracted)}}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(respond))
+    settings = AISettings(
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_key="mock-key",
+        model="mock-model",
+    )
+    service = ScheduleExtractionService(OpenRouterClient(settings, http_client=http))
+    app.dependency_overrides[get_extraction_service] = lambda: service
+    try:
+        response = TestClient(app).post(
+            "/schedules/extract",
+            headers=bearer(signing_key),
+            json={"text": "Arrive at school on October 20 at 7 AM", "timezone": "Asia/Manila"},
+        )
+    finally:
+        http.close()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready_for_review"
+    assert response.json()["extraction"]["target_time_local"] == "07:00:00"
+    assert "title" not in response.json()["extraction"]
+
+
+def test_extraction_endpoint_maps_upstream_timeout_to_safe_503(
+    api_db: None, signing_key: str
+) -> None:
+    def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("simulated upstream timeout", request=request)
+
+    http = httpx.Client(transport=httpx.MockTransport(timeout))
+    settings = AISettings(
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_key="mock-key",
+        model="mock-model",
+    )
+    service = ScheduleExtractionService(OpenRouterClient(settings, http_client=http))
+    app.dependency_overrides[get_extraction_service] = lambda: service
+    try:
+        response = TestClient(app).post(
+            "/schedules/extract",
+            headers=bearer(signing_key),
+            json={"text": "Arrive at school tomorrow at 7 AM", "timezone": "Asia/Manila"},
+        )
+    finally:
+        http.close()
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Schedule extraction is temporarily unavailable"}
+    assert "simulated upstream timeout" not in response.text
 
 
 def test_extraction_endpoint_maps_service_failure_to_safe_error(

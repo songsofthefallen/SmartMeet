@@ -30,7 +30,7 @@ DurationMinutes = Annotated[int, Field(ge=0)]
 class ScheduleCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    title: NonEmptyTitle
+    title: Annotated[str, StringConstraints(max_length=200, strip_whitespace=True)] | None = None
     description: str | None = Field(default=None, max_length=4000)
     location: "LocationSelection | None" = None
     origin_location: "LocationSelection | None" = None
@@ -45,6 +45,11 @@ class ScheduleCreate(BaseModel):
     @classmethod
     def target_datetime_must_be_aware(cls, value: datetime) -> datetime:
         return _require_aware(value)
+
+    @field_validator("title")
+    @classmethod
+    def blank_title_uses_default(cls, value: str | None) -> str | None:
+        return value or None
 
     @field_validator("timezone")
     @classmethod
@@ -190,6 +195,18 @@ class WeatherPointForecast(BaseModel):
     wind_speed_kmh: float = Field(ge=0, allow_inf_nan=False)
 
 
+class WeatherAdvisory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    condition: Annotated[str, StringConstraints(min_length=1, max_length=80)]
+    endpoint: Annotated[str, StringConstraints(pattern="^(origin|destination)$")]
+    forecast_at: datetime
+
+    @field_validator("forecast_at")
+    @classmethod
+    def advisory_forecast_time_must_be_aware(cls, value: datetime) -> datetime:
+        return _require_aware(value)
+
+
 @dataclass(frozen=True)
 class WeatherAssessmentDiagnostic:
     """Internal-only failure context; deliberately excluded from API serialization."""
@@ -207,15 +224,18 @@ class WeatherEstimate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Annotated[str, StringConstraints(pattern="^(available|unavailable)$")]
     summary: Annotated[str, StringConstraints(max_length=500)]
-    buffer_minutes: int = Field(ge=0, le=30)
+    # Read deprecated values from schedules written by Spec 14. New estimates
+    # omit this field and weather never participates in time calculations.
+    buffer_minutes: int | None = Field(default=None, ge=0, le=30, exclude=True)
     retrieved_at: datetime | None
     forecast_at: datetime | None = None
     origin_forecast_at: datetime | None = None
     destination_forecast_at: datetime | None = None
-    timing_note: Annotated[str, StringConstraints(max_length=300)] | None = None
+    timing_note: Annotated[str, StringConstraints(max_length=300)] | None = Field(default=None, exclude=True)
     origin_weather: WeatherPointForecast | None = None
     destination_weather: WeatherPointForecast | None = None
     conditions: list[Annotated[str, StringConstraints(max_length=80)]] = Field(default_factory=list, max_length=10)
+    advisories: list[WeatherAdvisory] = Field(default_factory=list, max_length=20)
     _diagnostic: WeatherAssessmentDiagnostic | None = PrivateAttr(default=None)
 
     @field_validator("retrieved_at")

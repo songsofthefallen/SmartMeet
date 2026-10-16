@@ -8,7 +8,7 @@ from typing import Literal
 import httpx
 from pydantic import ValidationError
 
-from schemas import LocationSelection, WeatherAssessmentDiagnostic, WeatherEstimate
+from schemas import LocationSelection, WeatherAdvisory, WeatherAssessmentDiagnostic, WeatherEstimate
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 WMO_WEATHER_CONDITIONS = {
@@ -74,8 +74,7 @@ def _unavailable(
 ) -> WeatherEstimate:
     estimate = WeatherEstimate(
         status="unavailable",
-        summary="Forecast unavailable; no weather buffer applied.",
-        buffer_minutes=0,
+        summary="Weather information is temporarily unavailable.",
         retrieved_at=None,
     )
     estimate._diagnostic = WeatherAssessmentDiagnostic(
@@ -176,7 +175,7 @@ class OpenMeteoWeatherService:
             return _unavailable("provider_request_failure", assessment_pass, departure, arrival)
 
         conditions: list[str] = []
-        buffer = 0
+        advisories: list[WeatherAdvisory] = []
         point_forecasts: list[dict[str, object]] = []
         for point, values in samples:
             rain = _number(values["precipitation"])
@@ -195,25 +194,39 @@ class OpenMeteoWeatherService:
                 "snowfall_cm": snow,
                 "wind_speed_kmh": wind,
             })
+            forecast_at = departure if point == "origin" else arrival
+            endpoint_conditions: list[str] = []
             if rain >= 7.5:
-                conditions.append(f"Heavy rain near {point}"); buffer = max(buffer, 10)
+                endpoint_conditions.append("Heavy rain")
             elif rain >= 2.5:
-                conditions.append(f"Rain near {point}"); buffer = max(buffer, 5)
+                endpoint_conditions.append("Rain")
             if snow >= 1:
-                conditions.append(f"Snow near {point}"); buffer = max(buffer, 15)
+                endpoint_conditions.append("Snow")
             if wind >= 50:
-                conditions.append(f"Strong wind near {point}"); buffer = max(buffer, 10)
+                endpoint_conditions.append("Strong winds")
             if int(code) in {95, 96, 99}:
-                conditions.append(f"Thunderstorm near {point}"); buffer = max(buffer, 20)
-        summary = "Forecast conditions may affect travel time." if buffer else "No extra time needed based on the forecast at your origin and destination."
+                endpoint_conditions.append("Thunderstorm")
+            for condition in endpoint_conditions:
+                conditions.append(f"{condition} near {point}")
+                advisories.append(WeatherAdvisory(
+                    condition=condition,
+                    endpoint=point,
+                    forecast_at=forecast_at.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0),
+                ))
+        summary = (
+            "Forecast conditions at a selected route endpoint may affect your trip."
+            if advisories
+            else "No significant weather concerns detected at the selected route endpoints."
+        )
         origin_forecast_at = departure.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
         destination_forecast_at = arrival.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
         return WeatherEstimate(
-            status="available", summary=summary, buffer_minutes=buffer,
+            status="available", summary=summary,
             retrieved_at=datetime.now(timezone.utc), forecast_at=origin_forecast_at,
             origin_forecast_at=origin_forecast_at,
             destination_forecast_at=destination_forecast_at,
             origin_weather=point_forecasts[0],
             destination_weather=point_forecasts[1],
             conditions=conditions,
+            advisories=advisories,
         )

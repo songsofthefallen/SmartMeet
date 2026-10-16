@@ -9,7 +9,6 @@ test("school plan clarification shows friendly deduplicated questions, never fie
     status: "needs_clarification",
     extraction: {
       is_schedule_request: true,
-      title: "Go to school",
       time_intent: null,
       target_date_local: "2026-10-12",
       target_time_local: null,

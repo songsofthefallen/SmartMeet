@@ -17,9 +17,6 @@ from models import TimeIntent
 from timezone_utils import get_iana_timezone
 
 
-NonEmptyText = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)
-]
 ExtractionInputText = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)
 ]
@@ -32,7 +29,6 @@ class ScheduleExtraction(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     is_schedule_request: bool
-    title: NonEmptyText | None
     time_intent: TimeIntent | None
     target_date_local: date | None
     target_time_local: time | None
@@ -66,7 +62,6 @@ class ScheduleExtraction(BaseModel):
         if not self.is_schedule_request:
             return []
         required = {
-            "title": self.title,
             "time_intent": self.time_intent,
             "target_date_local": self.target_date_local,
             "target_time_local": self.target_time_local,

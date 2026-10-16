@@ -4,7 +4,7 @@ from threading import Lock
 import httpx
 import pytest
 
-from schemas import LocationSelection, WeatherAssessmentDiagnostic, WeatherEstimate
+from schemas import LocationSelection, WeatherAdvisory, WeatherAssessmentDiagnostic, WeatherEstimate
 import weather_service
 from weather_service import OpenMeteoWeatherService, condition_for_weather_code
 
@@ -56,13 +56,13 @@ def forecast(when: datetime, *, rain: float = 0, snow: float = 0, wind: float = 
     }}
 
 
-def test_weather_thresholds_use_strongest_single_buffer() -> None:
+def test_weather_thresholds_produce_advisories_for_each_affected_endpoint() -> None:
     when = datetime.now(timezone.utc) + timedelta(hours=3)
     client = MockWeatherClient(forecast(when, rain=8, snow=2, wind=55, code=95))
     point = LocationSelection(name="Home", latitude=14, longitude=121)
     result = OpenMeteoWeatherService(client).assess(point, point, when, when)
     assert result.status == "available"
-    assert result.buffer_minutes == 20
+    assert {item.condition for item in result.advisories} == {"Heavy rain", "Snow", "Strong winds", "Thunderstorm"}
     assert any("Heavy rain" in item for item in result.conditions)
     assert any("Thunderstorm" in item for item in result.conditions)
     assert client.calls == 2
@@ -93,45 +93,85 @@ def test_unsupported_wmo_code_is_not_misreported_as_clear() -> None:
     assert condition_for_weather_code(999) is None
 
 
+def test_legacy_weather_buffer_json_remains_readable_but_is_not_serialized() -> None:
+    estimate = WeatherEstimate.model_validate({
+        "status": "available",
+        "summary": "Legacy forecast",
+        "buffer_minutes": 15,
+        "timing_note": "Legacy timing note",
+        "retrieved_at": "2026-10-13T00:00:00Z",
+    })
+
+    serialized = estimate.model_dump(mode="json")
+
+    assert estimate.buffer_minutes == 15
+    assert "buffer_minutes" not in serialized
+    assert "timing_note" not in serialized
+
+
+def test_weather_advisory_requires_endpoint_and_aware_forecast_time() -> None:
+    advisory = WeatherAdvisory(
+        condition="Heavy rain",
+        endpoint="destination",
+        forecast_at="2026-10-13T00:00:00Z",
+    )
+    assert advisory.forecast_at.tzinfo is not None
+
+
 @pytest.mark.parametrize(
-    ("scenario", "values", "expected_minutes"),
+    ("scenario", "values", "has_advisory"),
     [
-        pytest.param("clear", {"rain": 0, "snow": 0, "wind": 0, "code": 0}, 0, id="clear-weather"),
-        pytest.param("rain-3mm-h", {"rain": 3}, 5, id="rain-3mm-h"),
-        pytest.param("heavy-rain-8mm-h", {"rain": 8}, 10, id="heavy-rain-8mm-h"),
-        pytest.param("snow-1cm-h", {"snow": 1}, 15, id="snow-1cm-h"),
-        pytest.param("wind-55km-h", {"wind": 55}, 10, id="wind-55km-h"),
-        pytest.param("wmo-95", {"code": 95}, 20, id="thunderstorm-code-95"),
-        pytest.param("wmo-96", {"code": 96}, 20, id="thunderstorm-code-96"),
-        pytest.param("wmo-99", {"code": 99}, 20, id="thunderstorm-code-99"),
-        pytest.param("stacked-weather", {"rain": 8, "snow": 1, "wind": 55, "code": 96}, 20, id="multiple-use-strongest-only"),
+        pytest.param("clear", {"rain": 0, "snow": 0, "wind": 0, "code": 0}, False, id="clear-weather"),
+        pytest.param("rain-3mm-h", {"rain": 3}, True, id="rain-3mm-h"),
+        pytest.param("heavy-rain-8mm-h", {"rain": 8}, True, id="heavy-rain-8mm-h"),
+        pytest.param("snow-1cm-h", {"snow": 1}, True, id="snow-1cm-h"),
+        pytest.param("wind-55km-h", {"wind": 55}, True, id="wind-55km-h"),
+        pytest.param("wmo-95", {"code": 95}, True, id="thunderstorm-code-95"),
+        pytest.param("wmo-96", {"code": 96}, True, id="thunderstorm-code-96"),
+        pytest.param("wmo-99", {"code": 99}, True, id="thunderstorm-code-99"),
+        pytest.param("stacked-weather", {"rain": 8, "snow": 1, "wind": 55, "code": 96}, True, id="multiple-advisories"),
     ],
 )
-def test_named_weather_scenarios(scenario: str, values: dict[str, object], expected_minutes: int) -> None:
+def test_named_weather_scenarios(scenario: str, values: dict[str, object], has_advisory: bool) -> None:
     """Run with `pytest tests/test_weather.py -k <scenario-id>` for a focused scenario."""
     when = datetime.now(timezone.utc) + timedelta(hours=3)
     response = forecast(when, **values)  # type: ignore[arg-type]
     point = LocationSelection(name="Test point", latitude=14, longitude=121)
     estimate = OpenMeteoWeatherService(MockWeatherClient(response)).assess(point, point, when, when)
     assert estimate.status == "available"
-    assert estimate.buffer_minutes == expected_minutes
+    assert bool(estimate.advisories) is has_advisory
+    expected_advisories = set()
+    rain = float(values.get("rain", 0))
+    if rain >= 7.5:
+        expected_advisories.add("Heavy rain")
+    elif rain >= 2.5:
+        expected_advisories.add("Rain")
+    if float(values.get("snow", 0)) >= 1:
+        expected_advisories.add("Snow")
+    if float(values.get("wind", 0)) >= 50:
+        expected_advisories.add("Strong winds")
+    if int(values.get("code", 3)) in {95, 96, 99}:
+        expected_advisories.add("Thunderstorm")
+    assert {item.condition for item in estimate.advisories} == expected_advisories
+    assert {item.endpoint for item in estimate.advisories} == ({"origin", "destination"} if expected_advisories else set())
+    assert all(item.forecast_at == when.replace(minute=0, second=0, microsecond=0) for item in estimate.advisories)
     expected_condition = condition_for_weather_code(int(values.get("code", 3)))
     assert estimate.origin_weather is not None
     assert estimate.origin_weather.condition == expected_condition
-    if expected_minutes == 0:
-        assert estimate.summary == "No extra time needed based on the forecast at your origin and destination."
+    if not has_advisory:
+        assert estimate.summary == "No significant weather concerns detected at the selected route endpoints."
     else:
-        assert estimate.summary == "Forecast conditions may affect travel time."
+        assert estimate.summary == "Forecast conditions at a selected route endpoint may affect your trip."
         assert estimate.conditions
 
 
-def test_weather_no_threshold_conditions_apply_no_buffer() -> None:
+def test_weather_no_threshold_conditions_produce_no_advisory() -> None:
     when = datetime.now(timezone.utc) + timedelta(hours=3)
     client = MockWeatherClient(forecast(when, rain=2.49, snow=0.99, wind=49.9, code=3))
     point = LocationSelection(name="Campus", latitude=14, longitude=121)
     result = OpenMeteoWeatherService(client).assess(point, point, when, when)
     assert result.status == "available"
-    assert result.buffer_minutes == 0
+    assert result.advisories == []
     assert result.conditions == []
 
 
@@ -142,7 +182,7 @@ def test_weather_timeout_and_invalid_shape_are_unavailable() -> None:
     invalid = OpenMeteoWeatherService(MockWeatherClient({"hourly": {"time": []}})).assess(point, point, when, when)
     for result in (timeout, invalid):
         assert result.status == "unavailable"
-        assert result.buffer_minutes == 0
+        assert result.advisories == []
         assert result.retrieved_at is None
     assert timeout._diagnostic is not None and timeout._diagnostic.reason == "provider_timeout"
     assert invalid._diagnostic is not None and invalid._diagnostic.reason == "invalid_response_values"
@@ -166,7 +206,7 @@ def test_endpoint_timeout_is_unavailable_and_never_applies_unverified_buffer(
     result = OpenMeteoWeatherService(client).assess(origin, destination, origin_time, destination_time)
 
     assert result.status == "unavailable"
-    assert result.buffer_minutes == 0
+    assert result.advisories == []
     assert result.retrieved_at is None
     assert result.origin_weather is None and result.destination_weather is None
     assert result._diagnostic is not None
@@ -188,11 +228,11 @@ def test_weather_assessment_can_recover_on_a_later_attempt_without_reusing_faile
     recovered = service.assess(origin, destination, origin_time, destination_time, assessment_pass=2)
 
     assert failed.status == "unavailable"
-    assert failed.buffer_minutes == 0
+    assert failed.advisories == []
     assert failed._diagnostic is not None and failed._diagnostic.reason == "provider_timeout"
     assert failed._diagnostic.failed_point == "origin"
     assert recovered.status == "available"
-    assert recovered.buffer_minutes == 10
+    assert any(item.condition == "Heavy rain" for item in recovered.advisories)
     assert recovered.origin_weather is not None and recovered.origin_weather.precipitation_mm == 8
     assert len(client.calls) == 4
     assert all(timeout == 4.0 for _, timeout in client.calls)
@@ -235,7 +275,7 @@ def test_missing_or_invalid_weather_values_never_apply_a_buffer(hourly_changes: 
     point = LocationSelection(name="Test point", latitude=14, longitude=121)
     estimate = OpenMeteoWeatherService(MockWeatherClient({"hourly": hourly})).assess(point, point, when, when)
     assert estimate.status == "unavailable"
-    assert estimate.buffer_minutes == 0
+    assert estimate.advisories == []
     assert estimate.retrieved_at is None
     assert estimate._diagnostic is not None
     assert estimate._diagnostic.reason == "invalid_response_values"
@@ -247,7 +287,7 @@ def test_weather_outside_hourly_coverage_is_unavailable() -> None:
     client = MockWeatherClient(forecast(when))
     result = OpenMeteoWeatherService(client).assess(point, point, when, when)
     assert result.status == "unavailable"
-    assert result.buffer_minutes == 0
+    assert result.advisories == []
     assert client.calls == 0
     assert result._diagnostic is not None
     assert result._diagnostic.reason == "unsupported_forecast_time"
@@ -315,7 +355,7 @@ def test_supported_forecast_time_boundaries_are_assessed(
     result = OpenMeteoWeatherService(client).assess(point, point, when, when)
 
     assert result.status == "available"
-    assert result.buffer_minutes == 0
+    assert result.advisories == []
     assert client.calls == 2
     assert result._diagnostic is None
 
@@ -330,7 +370,7 @@ def test_weather_requested_utc_hour_must_exist_in_provider_response() -> None:
     result = OpenMeteoWeatherService(MockWeatherClient(response)).assess(point, point, when, when)
 
     assert result.status == "unavailable"
-    assert result.buffer_minutes == 0
+    assert result.advisories == []
     assert result.retrieved_at is None
     assert result.origin_weather is None
     assert result.destination_weather is None

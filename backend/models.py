@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, CheckConstraint, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -41,12 +41,14 @@ class Schedule(Base):
         ),
         Index("ix_schedules_user_status", "clerk_user_id", "status"),
         UniqueConstraint("clerk_user_id", "idempotency_key", name="uq_schedules_user_idempotency"),
+        UniqueConstraint("clerk_user_id", "normalized_title", name="uq_schedules_user_normalized_title"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     clerk_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
+    normalized_title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     location: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     origin_location: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -106,3 +108,21 @@ class RouteRefreshUserLock(Base):
     __tablename__ = "route_refresh_user_locks"
 
     clerk_user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+
+
+class ScheduleNameCounter(Base):
+    """Transactional per-user sequence for backend-generated schedule names."""
+
+    __tablename__ = "schedule_name_counters"
+
+    clerk_user_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    next_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+@event.listens_for(Schedule, "before_insert")
+def _set_normalized_schedule_title(_mapper, _connection, target: Schedule) -> None:
+    """Keep ORM-created schedules consistent with the unique name key."""
+    normalized = target.title.strip().casefold()
+    if len(normalized) > 200:
+        raise ValueError("Schedule title is too long after normalization")
+    target.normalized_title = normalized

@@ -9,7 +9,7 @@ import { isAssistantAutosaveEligible } from "@/lib/assistant-autosave";
 import { formatTrafficDelay, isTrafficEstimateStale, routeTimeBasisLabel, trafficStatusLabel } from "@/lib/traffic-display.js";
 import { arrivalPreparationNote, suggestedTimeRows } from "@/lib/suggested-times.js";
 
-type FormValues = Omit<ScheduleInput, "target_datetime" | "time_intent" | "preparation_duration_minutes"> & { target_datetime: string; time_intent: ScheduleIntent | ""; preparation_duration_minutes: number | null };
+type FormValues = Omit<ScheduleInput, "target_datetime" | "time_intent" | "preparation_duration_minutes" | "title"> & { title: string; target_datetime: string; time_intent: ScheduleIntent | ""; preparation_duration_minutes: number | null };
 type Notice = { kind: "success" | "error"; text: string };
 
 const fallbackTimeZones = [
@@ -283,7 +283,6 @@ export default function ScheduleWorkspace() {
         setExtractionTime(nextTime);
         setForm((current) => ({
           ...current,
-          title: extracted.title ?? current.title,
           description: current.description?.trim() ? current.description : extractionText.trim(),
           time_intent: extracted.time_intent ?? current.time_intent,
           target_datetime: completeTarget ?? current.target_datetime,
@@ -306,7 +305,6 @@ export default function ScheduleWorkspace() {
   useEffect(() => {
     if (!autoSavePending.current || !extractionReview || editingId !== null) return;
     const valid = isAssistantAutosaveEligible({
-      title: form.title,
       timeIntent: form.time_intent,
       targetDateTime: form.target_datetime,
       timezone: form.timezone,
@@ -378,14 +376,14 @@ export default function ScheduleWorkspace() {
       setMessage({ kind: "error", text: messageFor(error) });
       return;
     }
-    if (!form.title.trim() || (form.preparation_duration_minutes !== null && (!Number.isInteger(form.preparation_duration_minutes) || form.preparation_duration_minutes < 0)) || (form.travel_duration_minutes !== null && (!Number.isInteger(form.travel_duration_minutes) || form.travel_duration_minutes < 0))) {
-      setMessage({ kind: "error", text: "Enter a title and valid nonnegative whole-minute durations when provided." });
+    if ((form.title.trim().length > 200) || (form.preparation_duration_minutes !== null && (!Number.isInteger(form.preparation_duration_minutes) || form.preparation_duration_minutes < 0)) || (form.travel_duration_minutes !== null && (!Number.isInteger(form.travel_duration_minutes) || form.travel_duration_minutes < 0))) {
+      setMessage({ kind: "error", text: "Enter a title of at most 200 characters and valid nonnegative whole-minute durations when provided." });
       return;
     }
 
     const input: ScheduleInput = {
       ...form,
-      title: form.title.trim(),
+      ...(editingId === null && extractionReview ? {} : (form.title.trim() ? { title: form.title.trim() } : {})),
       description: form.description?.trim() || null,
       location: form.location,
       origin_location: form.origin_location,
@@ -471,6 +469,7 @@ export default function ScheduleWorkspace() {
   const selected = selectedId === selectedSchedule?.id ? selectedSchedule : null;
   const originWeatherForecastAt = selected?.weather_estimate?.origin_forecast_at ?? selected?.weather_estimate?.forecast_at ?? null;
   const destinationWeatherForecastAt = selected?.weather_estimate?.destination_forecast_at ?? null;
+  const hasWeatherAdvisory = selected?.weather_estimate?.status === "available" && selected.weather_estimate.advisories.length > 0;
   const suggestedRows = selected ? suggestedTimeRows(selected, formatDate) : [];
   const preparationNote = selected ? arrivalPreparationNote(selected) : null;
   const extractionQuestions = extractionReview ? clarificationQuestions(extractionReview, form.timezone) : [];
@@ -529,7 +528,7 @@ export default function ScheduleWorkspace() {
                     {!extractionReview.extraction && <p className="mt-2 text-xs">Retry extraction or complete the form manually. Nothing has been saved.</p>}
                   </div>}
                 </section>}
-                <label className="block text-sm font-medium">Title <span className="text-[var(--state-error)]">*</span><input className={fieldClass} required maxLength={200} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Team planning meeting" /></label><label className="block text-sm font-medium">Description <span className="font-normal text-[var(--text-muted)]">(optional)</span><textarea className={fieldClass} rows={3} maxLength={4000} value={form.description ?? ""} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Add notes for this schedule" /></label>
+                <label className="block text-sm font-medium">Title <span className="font-normal text-[var(--text-muted)]">(optional; defaults to Schedule 1, Schedule 2, etc.)</span><input className={fieldClass} maxLength={200} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Team planning meeting" /></label><label className="block text-sm font-medium">Description <span className="font-normal text-[var(--text-muted)]">(optional)</span><textarea className={fieldClass} rows={3} maxLength={4000} value={form.description ?? ""} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Add notes for this schedule" /></label>
                 <div className="grid gap-4 sm:grid-cols-2"><LocationPicker label="Origin" value={form.origin_location} query={originQuery} results={originResults} searching={originSearching} onQuery={(value) => { setOriginQuery(value); setOriginResults([]); }} onSearch={() => void searchOriginLocations()} onSelect={(origin_location) => { setForm({ ...form, origin_location }); setOriginQuery(origin_location.name); setOriginResults([]); }} onClear={() => { setForm({ ...form, origin_location: null }); setOriginResults([]); }} /><LocationPicker label="Destination" value={form.location} query={locationQuery} results={locationResults} searching={locationSearching} onQuery={(value) => { setLocationQuery(value); setLocationResults([]); }} onSearch={() => void searchLocations()} onSelect={(location) => { setForm({ ...form, location }); setLocationQuery(location.name); setLocationResults([]); }} onClear={() => { setForm({ ...form, location: null }); setLocationResults([]); }} /></div>
                 {showSplitTargetInputs ? <div className="grid gap-4 sm:grid-cols-2">
                   <label className="block text-sm font-medium">Target date <span className="text-[var(--state-error)]">*</span><input className={fieldClass} type="date" required value={extractionDate} onChange={(event) => updateExtractionDate(event.target.value)} /></label>
@@ -557,10 +556,11 @@ export default function ScheduleWorkspace() {
                 {!selected.travel_estimate && <p className="mt-1 text-sm text-[var(--text-muted)]">Traffic status unavailable.</p>}
                 {selected.status === "active" && selected.origin_location && selected.location && <div className="mt-3 flex flex-wrap items-center gap-3"><button type="button" className={secondaryButton} disabled={routeRefreshingId !== null || (routeCooldowns[selected.id] ?? 0) > clockNow} onClick={() => void refreshRouteEstimate(selected)}><RefreshIcon />{routeRefreshingId === selected.id ? "Refreshing..." : "Refresh estimate"}</button>{(routeCooldowns[selected.id] ?? 0) > clockNow && <span className="text-xs text-[var(--text-muted)]" role="status">Refresh available in {Math.ceil((routeCooldowns[selected.id] - clockNow) / 1000)}s</span>}</div>}
               </section>
-              <section className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label="Weather forecast">
-                <h3 className="text-sm font-semibold">Weather forecast</h3>
-                <p className="mt-2 text-sm text-[var(--text-secondary)]">{selected.weather_estimate?.status === "available" && selected.weather_estimate.buffer_minutes === 0 ? "No extra time needed based on the forecast at your origin and destination." : selected.weather_estimate?.summary ?? "Forecast unavailable; no weather buffer applied."}</p>
-                <p className="mt-1 text-xs text-[var(--text-muted)]">Forecast conditions, not current observations.</p>
+              <section className={`mt-4 rounded-xl border p-4 ${hasWeatherAdvisory ? "border-[var(--state-warning)]/25 bg-[var(--state-warning-bg)]" : "border-[var(--border)] bg-[var(--surface)]"}`} aria-label="Weather advisory">
+                <h3 className="text-sm font-semibold">Weather advisory</h3>
+                <p className="mt-2 text-sm text-[var(--text-secondary)]">{selected.weather_estimate?.status === "available" ? selected.weather_estimate.summary : "Weather information is temporarily unavailable."}</p>
+                {selected.weather_estimate?.status === "available" && selected.weather_estimate.advisories.map((advisory, index) => <p className="mt-2 text-sm font-medium text-[var(--state-warning)]" key={`${advisory.endpoint}-${advisory.condition}-${index}`}>{advisory.condition} is forecast near your {advisory.endpoint} around {formatDate(advisory.forecast_at, selected.timezone)} and may affect your trip.</p>)}
+                <p className="mt-1 text-xs text-[var(--text-muted)]">Forecast conditions, not current observations. Forecasts cover the selected route endpoints, not every location along the route. Weather advisories are separate from the route duration and traffic delay.</p>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   {([ ["Origin", selected.weather_estimate?.origin_weather, originWeatherForecastAt], ["Destination", selected.weather_estimate?.destination_weather, destinationWeatherForecastAt] ] as const).map(([label, forecast, forecastAt]) => <div key={label} className="rounded-lg border border-[var(--border)] p-3">
                     <h4 className="text-xs font-semibold">{label} forecast</h4>
@@ -570,10 +570,6 @@ export default function ScheduleWorkspace() {
                   </div>)}
                 </div>
                 {selected.weather_estimate?.retrieved_at && <p className="mt-2 text-xs text-[var(--text-muted)]">Forecast data retrieved {formatDate(selected.weather_estimate.retrieved_at, selected.timezone)}.</p>}
-                <p className="mt-2 text-sm">Additional weather buffer: {selected.weather_estimate?.status === "available" ? `${selected.weather_estimate.buffer_minutes} min` : "Not applied"}</p>
-                {selected.weather_estimate?.status === "available" && selected.weather_estimate.buffer_minutes > 0 && selected.weather_estimate.conditions.length > 0 && <p className="mt-1 text-xs text-[var(--text-secondary)]">Extra time added for: {selected.weather_estimate.conditions.join(", ")}.</p>}
-                {selected.weather_estimate?.timing_note && <p className="mt-1 text-xs text-[var(--text-muted)]">{selected.weather_estimate.timing_note}</p>}
-                {selected.weather_estimate?.status === "unavailable" && <p className="mt-1 text-xs text-[var(--text-muted)]">Weather information unavailable for the planned trip time, so no weather adjustment was applied.</p>}
               </section>
               <section className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label="Calculated schedule suggestions"><h3 className="text-sm font-semibold">Suggested times</h3><p className="mt-1 text-xs text-[var(--text-muted)]">Calculated from your durations and configured buffers.</p>{preparationNote && <p className="mt-2 text-xs text-[var(--state-warning)]">{preparationNote}</p>}<dl className="mt-3 divide-y divide-[var(--border)]">{suggestedRows.map((row) => <div className="py-2" key={row.label}><dt className="text-xs text-[var(--text-muted)]">{row.label}</dt><dd className="mt-1 text-sm font-medium">{row.value}</dd></div>)}</dl></section>
               {selected.status === "active" && <div className="mt-5 flex flex-wrap gap-3 border-t border-[var(--border)] pt-5"><button className={secondaryButton} disabled={saving || detailLoading} onClick={() => openEdit(selected)}><PencilIcon /> Edit</button><button className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-[var(--state-error)]/30 px-4 py-2 text-sm font-semibold text-[var(--state-error)] hover:bg-[var(--state-error-bg)] focus-visible:outline-2 focus-visible:outline-[var(--state-error)] disabled:opacity-60" disabled={saving || detailLoading} onClick={() => setConfirmCancel(true)}><CloseIcon /> Cancel schedule</button></div>}

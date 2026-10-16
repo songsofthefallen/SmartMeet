@@ -14,7 +14,6 @@ from models import TimeIntent
 def candidate(**overrides: object) -> dict[str, object]:
     values: dict[str, object] = {
         "is_schedule_request": True,
-        "title": "Morning class",
         "time_intent": "arrival",
         "target_date_local": "2026-10-12",
         "target_time_local": "07:00:00",
@@ -82,7 +81,6 @@ def test_extraction_schema_accepts_explicit_nonnegative_durations() -> None:
 
 def test_missing_and_ambiguous_information_stays_null_and_is_reported() -> None:
     extracted = parsed_candidate(
-        title=None,
         time_intent=None,
         target_time_local=None,
         timezone=None,
@@ -100,13 +98,12 @@ def test_missing_and_ambiguous_information_stays_null_and_is_reported() -> None:
     assert result.extraction.target_time_local is None
     assert result.extraction.preparation_duration_minutes is None
     assert result.extraction.travel_duration_minutes is None
-    assert result.extraction.title == "New schedule"
     assert result.missing_fields == ["time_intent", "target_time_local", "timezone"]
     assert result.ambiguous_fields == ["time_intent", "ambiguities"]
 
 
-def test_missing_title_uses_inferred_destination_title() -> None:
-    extracted = parsed_candidate(title=None)
+def test_extraction_does_not_generate_or_require_a_schedule_title() -> None:
+    extracted = parsed_candidate()
     result = ScheduleExtractionService(MockExtractionClient(extracted)).extract(
         "I need to arrive at school by 8:00 AM tomorrow",
         reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
@@ -114,8 +111,7 @@ def test_missing_title_uses_inferred_destination_title() -> None:
     )
 
     assert result.status is ExtractionReviewStatus.READY_FOR_REVIEW
-    assert result.extraction.title == "Go to school"
-    assert "title" not in result.missing_fields
+    assert "title" not in ScheduleExtraction.model_fields
 
 
 def test_missing_model_timezone_uses_selected_timezone_without_clarification() -> None:
@@ -166,7 +162,6 @@ def test_model_time_offset_matching_timezone_is_normalized_to_local_wall_time() 
 
     assert result.status is ExtractionReviewStatus.READY_FOR_REVIEW
     assert result.extraction.target_date_local.isoformat() == "2026-10-12"
-    assert result.extraction.title == "Morning class"
     assert result.extraction.target_time_local.isoformat() == "08:00:00"
     assert result.extraction.timezone == "Asia/Manila"
     assert result.extraction.preparation_duration_minutes == 60
@@ -192,7 +187,6 @@ def test_model_time_offset_must_match_resolved_timezone() -> None:
     assert result.extraction is not None
     assert result.extraction.target_time_local is None
     assert result.extraction.target_date_local.isoformat() == "2026-10-12"
-    assert result.extraction.title == "Morning class"
     assert result.extraction.preparation_duration_minutes == 60
     assert result.extraction.travel_duration_minutes == 90
     assert result.missing_fields == ["target_time_local"]
@@ -201,7 +195,6 @@ def test_model_time_offset_must_match_resolved_timezone() -> None:
 
 def test_explicit_model_timezone_conflict_requires_confirmation_and_keeps_values() -> None:
     extracted = parsed_candidate(
-        title="School arrival",
         target_date_local="2026-10-12",
         target_time_local="08:00:00+08:00",
         timezone="Europe/Paris",
@@ -218,7 +211,6 @@ def test_explicit_model_timezone_conflict_requires_confirmation_and_keeps_values
     assert result.extraction.timezone == "Europe/Paris"
     assert result.extraction.target_time_local.isoformat() == "08:00:00"
     assert result.extraction.target_date_local.isoformat() == "2026-10-12"
-    assert result.extraction.title == "School arrival"
     assert result.extraction.preparation_duration_minutes == 60
     assert result.extraction.travel_duration_minutes == 90
     assert result.ambiguous_fields == ["timezone"]
@@ -292,6 +284,55 @@ def test_service_maps_provider_failures_to_safe_extraction_error() -> None:
         )
 
     assert "private upstream detail" not in str(error.value)
+
+
+def test_service_logs_sanitized_provider_failure_metadata(caplog: pytest.LogCaptureFixture) -> None:
+    client = MockExtractionClient(AIProviderError(
+        "private upstream detail",
+        category="timeout",
+        exception_class="ReadTimeout",
+    ))
+
+    with caplog.at_level("WARNING", logger="extraction_service"):
+        with pytest.raises(ScheduleExtractionError):
+            ScheduleExtractionService(client).extract(
+                "class tomorrow",
+                reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+            )
+
+    message = caplog.text
+    assert "exception_class=ReadTimeout" in message
+    assert "category=timeout" in message
+    assert "elapsed_ms=" in message
+    assert "upstream_http_status=none" in message
+    assert "private upstream detail" not in message
+
+
+@pytest.mark.parametrize(
+    ("status_code", "category"),
+    [(401, "authentication"), (429, "rate_limit"), (503, "provider_error")],
+)
+def test_service_logs_sanitized_upstream_status_and_category(
+    status_code: int, category: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = MockExtractionClient(AIProviderError(
+        "private upstream response body",
+        category=category,
+        exception_class="HTTPStatusError",
+        upstream_status_code=status_code,
+    ))
+
+    with caplog.at_level("WARNING", logger="extraction_service"):
+        with pytest.raises(ScheduleExtractionError):
+            ScheduleExtractionService(client).extract(
+                "class tomorrow",
+                reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+            )
+
+    assert f"exception_class=HTTPStatusError category={category}" in caplog.text
+    assert f"upstream_http_status={status_code}" in caplog.text
+    assert "elapsed_ms=" in caplog.text
+    assert "private upstream response body" not in caplog.text
 
 
 def test_service_rejects_invalid_mocked_provider_output() -> None:

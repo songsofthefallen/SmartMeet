@@ -1,5 +1,4 @@
 export type AssistantSaveFields = {
-  title: string;
   timeIntent: string;
   targetDateTime: string;
   timezone: string;
@@ -10,7 +9,6 @@ export type AssistantSaveFields = {
 
 export function isAssistantAutosaveEligible(fields: AssistantSaveFields): boolean {
   return Boolean(
-    fields.title.trim() &&
     (fields.timeIntent === "arrival" || fields.timeIntent === "departure") &&
     fields.targetDateTime &&
     fields.timezone.trim() &&

@@ -16,6 +16,11 @@ export type WeatherPointForecast = {
   snowfall_cm: number;
   wind_speed_kmh: number;
 };
+export type WeatherAdvisory = {
+  condition: string;
+  endpoint: "origin" | "destination";
+  forecast_at: string;
+};
 
 export type Schedule = {
   id: number;
@@ -24,7 +29,7 @@ export type Schedule = {
   location: LocationSelection | null;
   origin_location: LocationSelection | null;
   travel_estimate: { duration_seconds: number; duration_minutes: number; provider: string; retrieved_at: string; traffic_included: boolean; route_time_basis: "current" | "scheduled_departure" | "scheduled_arrival"; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: { severity: "little_or_no_delay" | "some_delay" | "significant_delay"; delay_seconds: number }[] } | null;
-  weather_estimate: { status: "available" | "unavailable"; summary: string; buffer_minutes: number; retrieved_at: string | null; forecast_at: string | null; origin_forecast_at?: string | null; destination_forecast_at?: string | null; timing_note?: string | null; origin_weather?: WeatherPointForecast | null; destination_weather?: WeatherPointForecast | null; conditions: string[] } | null;
+  weather_estimate: { status: "available" | "unavailable"; summary: string; retrieved_at: string | null; forecast_at: string | null; origin_forecast_at?: string | null; destination_forecast_at?: string | null; origin_weather?: WeatherPointForecast | null; destination_weather?: WeatherPointForecast | null; conditions: string[]; advisories: WeatherAdvisory[] } | null;
   traffic_delay_minutes: number | null;
   traffic_status: "little_or_no_delay" | "some_delay" | "significant_delay" | "unavailable";
   traffic_data_source: "live_available" | "historical_available" | "live_and_historical_available" | "unknown";
@@ -46,7 +51,7 @@ export type Schedule = {
 };
 
 export type ScheduleInput = {
-  title: string;
+  title?: string;
   description: string | null;
   location: LocationSelection | null;
   origin_location: LocationSelection | null;
@@ -61,7 +66,6 @@ export type ScheduleUpdateInput = Partial<ScheduleInput>;
 
 export type ScheduleExtraction = {
   is_schedule_request: boolean;
-  title: string | null;
   time_intent: ScheduleIntent | null;
   target_date_local: string | null;
   target_time_local: string | null;
@@ -107,7 +111,7 @@ function isSchedule(value: unknown): value is Schedule {
     (value.location === null || isLocation(value.location)) &&
     ((value.origin_location ?? null) === null || isLocation(value.origin_location)) &&
     ((value.travel_estimate ?? null) === null || (isRecord(value.travel_estimate) && typeof value.travel_estimate.duration_seconds === "number" && typeof value.travel_estimate.duration_minutes === "number" && typeof value.travel_estimate.provider === "string" && typeof value.travel_estimate.retrieved_at === "string" && typeof value.travel_estimate.traffic_included === "boolean" && ["current", "scheduled_departure", "scheduled_arrival"].includes(value.travel_estimate.route_time_basis as string) && (typeof value.travel_estimate.traffic_delay_seconds === "number" || value.travel_estimate.traffic_delay_seconds === null) && (typeof value.travel_estimate.no_traffic_travel_time_seconds === "number" || value.travel_estimate.no_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.historic_traffic_travel_time_seconds === "number" || value.travel_estimate.historic_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.live_traffic_incidents_travel_time_seconds === "number" || value.travel_estimate.live_traffic_incidents_travel_time_seconds === null) && Array.isArray(value.travel_estimate.traffic_sections))) &&
-    ((value.weather_estimate ?? null) === null || (isRecord(value.weather_estimate) && ["available", "unavailable"].includes(value.weather_estimate.status as string) && typeof value.weather_estimate.summary === "string" && typeof value.weather_estimate.buffer_minutes === "number" && (typeof value.weather_estimate.retrieved_at === "string" || value.weather_estimate.retrieved_at === null) && (typeof value.weather_estimate.forecast_at === "string" || value.weather_estimate.forecast_at === null) && (value.weather_estimate.origin_forecast_at === undefined || typeof value.weather_estimate.origin_forecast_at === "string" || value.weather_estimate.origin_forecast_at === null) && (value.weather_estimate.destination_forecast_at === undefined || typeof value.weather_estimate.destination_forecast_at === "string" || value.weather_estimate.destination_forecast_at === null) && (value.weather_estimate.timing_note === undefined || typeof value.weather_estimate.timing_note === "string" || value.weather_estimate.timing_note === null) && (value.weather_estimate.origin_weather === undefined || value.weather_estimate.origin_weather === null || isWeatherPointForecast(value.weather_estimate.origin_weather)) && (value.weather_estimate.destination_weather === undefined || value.weather_estimate.destination_weather === null || isWeatherPointForecast(value.weather_estimate.destination_weather)) && Array.isArray(value.weather_estimate.conditions))) &&
+    ((value.weather_estimate ?? null) === null || (isRecord(value.weather_estimate) && ["available", "unavailable"].includes(value.weather_estimate.status as string) && typeof value.weather_estimate.summary === "string" && (typeof value.weather_estimate.retrieved_at === "string" || value.weather_estimate.retrieved_at === null) && (typeof value.weather_estimate.forecast_at === "string" || value.weather_estimate.forecast_at === null) && (value.weather_estimate.origin_forecast_at === undefined || typeof value.weather_estimate.origin_forecast_at === "string" || value.weather_estimate.origin_forecast_at === null) && (value.weather_estimate.destination_forecast_at === undefined || typeof value.weather_estimate.destination_forecast_at === "string" || value.weather_estimate.destination_forecast_at === null) && (value.weather_estimate.origin_weather === undefined || value.weather_estimate.origin_weather === null || isWeatherPointForecast(value.weather_estimate.origin_weather)) && (value.weather_estimate.destination_weather === undefined || value.weather_estimate.destination_weather === null || isWeatherPointForecast(value.weather_estimate.destination_weather)) && Array.isArray(value.weather_estimate.conditions) && Array.isArray(value.weather_estimate.advisories) && value.weather_estimate.advisories.every((item) => isRecord(item) && typeof item.condition === "string" && (item.endpoint === "origin" || item.endpoint === "destination") && typeof item.forecast_at === "string"))) &&
     ((typeof value.traffic_delay_minutes === "number" || value.traffic_delay_minutes === null) && ["little_or_no_delay", "some_delay", "significant_delay", "unavailable"].includes(value.traffic_status as string) && ["live_available", "historical_available", "live_and_historical_available", "unknown"].includes(value.traffic_data_source as string)) &&
     (value.time_intent === "arrival" || value.time_intent === "departure") &&
     typeof value.target_datetime === "string" &&
@@ -160,7 +164,6 @@ function isScheduleExtraction(value: unknown): value is ScheduleExtraction {
   if (!isRecord(value)) return false;
   return (
     typeof value.is_schedule_request === "boolean" &&
-    isNullableString(value.title) &&
     (value.time_intent === "arrival" || value.time_intent === "departure" || value.time_intent === null) &&
     isNullableString(value.target_date_local) &&
     isNullableString(value.target_time_local) &&
@@ -226,6 +229,9 @@ async function request<T>(
   if (!response.ok) {
     if (response.status === 401) throw new ScheduleApiError("Your session expired or could not be verified. Refresh the page and sign in again.", 401);
     if (response.status === 404) throw new ScheduleApiError("This schedule is no longer available. Refresh the schedule list and try again.", 404);
+    if (response.status === 409 && isRecord(payload)) {
+      throw new ScheduleApiError(validationMessage(payload.detail) ?? "A schedule with this name already exists in your account.", 409);
+    }
     if (response.status === 422 && isRecord(payload)) {
       throw new ScheduleApiError(validationMessage(payload.detail) ?? "Check the schedule fields and try again.", 422);
     }

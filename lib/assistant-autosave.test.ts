@@ -5,7 +5,6 @@ import test from "node:test";
 import { isAssistantAutosaveEligible, type AssistantSaveFields } from "./assistant-autosave.ts";
 
 const valid: AssistantSaveFields = {
-  title: "Class",
   timeIntent: "arrival",
   targetDateTime: "2026-10-12T07:00",
   timezone: "Asia/Manila",

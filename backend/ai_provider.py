@@ -24,12 +24,29 @@ class AIConfigurationError(RuntimeError):
 class AIProviderError(RuntimeError):
     """Raised when OpenRouter cannot return a valid structured response."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "provider_error",
+        exception_class: str = "AIProviderError",
+        upstream_status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.exception_class = exception_class
+        self.upstream_status_code = upstream_status_code
+
 
 class AIInvalidOutputError(AIProviderError):
     """Raised when a successful provider response fails the requested schema."""
 
     def __init__(self, invalid_fields: tuple[str, ...]) -> None:
-        super().__init__("OpenRouter returned an invalid structured response")
+        super().__init__(
+            "OpenRouter returned an invalid structured response",
+            category="invalid_output",
+            exception_class="ValidationError",
+        )
         self.invalid_fields = invalid_fields
 
 
@@ -108,7 +125,21 @@ class OpenRouterClient:
                 response = self._post(messages, None)
 
         if response.is_error:
-            raise AIProviderError(f"OpenRouter request failed with HTTP {response.status_code}")
+            status_code = response.status_code
+            if status_code in (401, 403):
+                category = "authentication"
+            elif status_code == 429:
+                category = "rate_limit"
+            elif status_code in (408, 504):
+                category = "timeout"
+            else:
+                category = "provider_error"
+            raise AIProviderError(
+                f"OpenRouter request failed with HTTP {status_code}",
+                category=category,
+                exception_class="HTTPStatusError",
+                upstream_status_code=status_code,
+            )
         try:
             payload = response.json()
             content = payload["choices"][0]["message"]["content"]
@@ -146,9 +177,17 @@ class OpenRouterClient:
                 json=body,
             )
         except httpx.TimeoutException as exc:
-            raise AIProviderError("OpenRouter request timed out") from exc
+            raise AIProviderError(
+                "OpenRouter request timed out",
+                category="timeout",
+                exception_class=type(exc).__name__,
+            ) from exc
         except httpx.HTTPError as exc:
-            raise AIProviderError("OpenRouter request could not be completed") from exc
+            raise AIProviderError(
+                "OpenRouter request could not be completed",
+                category="transport_error",
+                exception_class=type(exc).__name__,
+            ) from exc
 
 
 def _unsupported_format(response: httpx.Response) -> bool:
