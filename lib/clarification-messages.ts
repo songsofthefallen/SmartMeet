@@ -9,6 +9,8 @@ const missingQuestions: Record<string, string> = {
   target_time_local: "What local time should this schedule use?",
   timezone: "Which timezone should interpret the target time?",
   schedule_request: "What event or plan should be scheduled?",
+  origin_description: "Where are you travelling from?",
+  destination_description: "Where are you going?",
 };
 
 const fieldPhrases: Record<string, string> = {
@@ -19,6 +21,8 @@ const fieldPhrases: Record<string, string> = {
   timezone: "timezone",
   preparation_duration_minutes: "preparation duration",
   travel_duration_minutes: "travel duration",
+  origin_description: "starting location",
+  destination_description: "destination",
   target_time_offset: "time offset",
 };
 

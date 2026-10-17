@@ -182,3 +182,30 @@
 - Decision: Compare the aware intended departure instant (calculated departure when available, otherwise the target instant) with current UTC time at each provider assessment and response. Past schedules skip route and weather requests, retain stored historical estimates, and reject manual route refresh before reserving a refresh attempt. Label past schedules and retained estimates as historical reference only. Editing a target into the future resumes normal routing and weather assessment.
 - Persistence: Past status is derived from the target instant; no schema or migration change is needed. Provider estimate JSON remains unchanged when a schedule becomes past.
 - Tradeoffs: Past status can change as time passes without a database write, so it is computed on reads and displayed from the API response.
+
+## DEC-030 - AI extracts location descriptions; users confirm TomTom matches
+- Context: Natural-language schedules may state distinct origins and destinations. AI text is not a trusted source for coordinates or a unique real-world place.
+- Decision: Add required-nullable `origin_description` and `destination_description` fields to the extraction contract. Keep extraction limited to user-stated text. The authenticated frontend uses the existing backend TomTom Search endpoint to fetch candidates and requires explicit user selection before auto-saving any stated location. Empty results and provider failures leave locations unselected. Editing a location description clears its confirmed selection; unrelated edits retain selected `LocationSelection` values.
+- Validation/persistence: Locations remain optional under current schedule rules. If a description is extracted, automatic saving waits for its selection; a user can still save a schedule without an optional location, but no unresolved text is persisted as a confirmed coordinate. Existing schedule JSON fields store selected places, so no schema or migration change is needed.
+- Scope: No routing, traffic, weather, or deterministic time-calculation behavior changes. The requested spec is in `15-ai-location-extraction.md`, whose internal heading currently says “Spec 16”; implementation follows the content at that path.
+
+## DEC-031 - Explain route calculation timeouts without fabricating estimates
+- Context: Long route calculations can exceed the routing provider's compute limit, while the adapter's short request timeout can fail first. A failed manual refresh must not erase a previously saved estimate or be presented as a current estimate.
+- Decision: Allow up to 35 seconds for TomTom route calculation, classify only known safe failure categories (timeout, provider compute limit, explicit no-route result), and return actionable backend-authored messages. Surface the safe timeout message in the frontend. Keep provider payloads private and preserve the stored estimate on refresh failure. Do not synthesize a duration or route when TomTom cannot provide one; users can enter travel duration manually.
+- Tradeoffs: Slow provider requests may take longer to resolve, and hosting/proxy timeouts may still terminate requests earlier. Exact live failures cannot be attributed without provider response logs.
+
+## DEC-032 - Confirm before saving when no drivable route is found
+- Context: Schedule creation previously saved successfully with no route or weather estimate when TomTom explicitly reported that no route existed. Users only encountered an actionable explanation if they later attempted a manual refresh.
+- Decision: On create, when routing returns an explicit no-route result, return a confirmation-required response before persistence. The UI explains that traffic and weather estimates will be unavailable and offers saving without a route estimate or reviewing locations. A confirmed retry skips routing; schedules without route data continue using existing unavailable behavior. Other provider failures keep their current non-blocking create behavior.
+- Persistence: The confirmation flag is request-only. No migration or schema column is added.
+
+## DEC-033 - Route duration gates trip-time weather forecasts
+- Status: Superseded by DEC-034
+- Context: Weather forecasts are queried by endpoint coordinates and by the calculated time the schedule is expected to reach each endpoint. Without a route duration, departure/arrival forecast times cannot both be determined, even though origin and destination coordinates are present.
+- Historical decision: Initially kept endpoint forecasts unavailable when travel duration was unknown. This did not satisfy the requested independent weather assessment and is superseded.
+
+## DEC-034 - Assess endpoint weather independently of route duration
+- Context: Weather lookup needs endpoint coordinates and forecast times, but a missing route estimate does not make weather unavailable. Exact departure and arrival times cannot be derived without a duration.
+- Decision: When duration is known, retain forecasts near calculated departure at the origin and arrival at the destination. When duration is unknown, assess both endpoints at the intended event instant and label the results as event-time endpoint snapshots, not trip-timed forecasts. Weather does not depend on traffic observations or route availability.
+- UI: When no route estimate exists, hide the upcoming Travel and traffic card and offer a weather-only refresh action. Treat an explicit no-route response from a route refresh as an informational status instead of an error alert. Preserve the past-schedule unavailable-reference behavior.
+- Persistence: No schema or migration change; reuse the existing weather estimate JSON.

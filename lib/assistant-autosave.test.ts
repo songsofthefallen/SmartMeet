@@ -27,3 +27,28 @@ test("assistant autosave rejects invalid durations", () => {
   assert.equal(isAssistantAutosaveEligible({ ...valid, travelMinutes: -1 }), false);
   assert.equal(isAssistantAutosaveEligible({ ...valid, preparationMinutes: 1.5 }), false);
 });
+
+test("assistant autosave waits for explicit selection of extracted places", () => {
+  assert.equal(isAssistantAutosaveEligible({
+    ...valid,
+    originDescription: "Santa Maria, Bulacan",
+    destinationDescription: "University of Santo Tomas",
+    originResolved: false,
+    destinationResolved: false,
+  }), false);
+  assert.equal(isAssistantAutosaveEligible({
+    ...valid,
+    originDescription: "Santa Maria, Bulacan",
+    destinationDescription: "University of Santo Tomas",
+    originResolved: true,
+    destinationResolved: false,
+  }), false);
+  assert.equal(isAssistantAutosaveEligible({
+    ...valid,
+    originDescription: "Santa Maria, Bulacan",
+    destinationDescription: "University of Santo Tomas",
+    originResolved: true,
+    destinationResolved: true,
+  }), true);
+  assert.equal(isAssistantAutosaveEligible(valid), true, "location-free schedules retain existing eligibility");
+});

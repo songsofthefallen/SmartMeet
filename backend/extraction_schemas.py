@@ -37,6 +37,8 @@ class ScheduleExtraction(BaseModel):
     ] | None
     preparation_duration_minutes: DurationMinutes | None
     travel_duration_minutes: DurationMinutes | None
+    origin_description: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)] | None
+    destination_description: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)] | None
     time_intent_ambiguous: bool
     ambiguities: list[
         Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]

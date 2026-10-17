@@ -20,6 +20,8 @@ def candidate(**overrides: object) -> dict[str, object]:
         "timezone": "Asia/Manila",
         "preparation_duration_minutes": None,
         "travel_duration_minutes": None,
+        "origin_description": None,
+        "destination_description": None,
         "time_intent_ambiguous": False,
         "ambiguities": [],
     }
@@ -65,6 +67,7 @@ def test_extraction_returns_valid_arrival_candidates_and_preserves_unknown_durat
     assert result.resolved_target_datetime.isoformat() == "2026-10-11T23:00:00+00:00"
     assert client.response_model is ScheduleExtraction
     assert "Reference instant: 2026-10-11T20:00:00+08:00" in client.messages[1]["content"]
+    assert "origin_description and destination_description" in client.messages[0]["content"]
 
 
 @pytest.mark.parametrize("intent", ["arrival", "departure"])
@@ -73,10 +76,31 @@ def test_extraction_schema_supports_both_existing_intents(intent: str) -> None:
     assert parsed.time_intent.value == intent
 
 
+def test_extraction_preserves_distinct_origin_and_destination_descriptions() -> None:
+    extracted = parsed_candidate(
+        origin_description="Santa Maria, Bulacan",
+        destination_description="University of Santo Tomas",
+    )
+    result = ScheduleExtractionService(MockExtractionClient(extracted)).extract(
+        "Go to University of Santo Tomas from Santa Maria, Bulacan tomorrow, arrive by 8 AM",
+        reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+    )
+    assert result.extraction is not None
+    assert result.extraction.origin_description == "Santa Maria, Bulacan"
+    assert result.extraction.destination_description == "University of Santo Tomas"
+
+
 def test_extraction_schema_accepts_explicit_nonnegative_durations() -> None:
     parsed = parsed_candidate(preparation_duration_minutes=25, travel_duration_minutes=40)
     assert parsed.preparation_duration_minutes == 25
     assert parsed.travel_duration_minutes == 40
+
+
+def test_extraction_location_descriptions_are_required_nullable_schema_properties() -> None:
+    schema = ScheduleExtraction.model_json_schema()
+    assert "origin_description" in schema["required"]
+    assert "destination_description" in schema["required"]
+    assert parsed_candidate().origin_description is None
 
 
 def test_missing_and_ambiguous_information_stays_null_and_is_reported() -> None:

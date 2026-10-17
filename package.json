@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "test:frontend": "node lib/traffic-display.test.js && node lib/suggested-times.test.js && node lib/schedule-order.test.js && node lib/schedule-warning-display.test.js",
+    "test:frontend": "node lib/traffic-display.test.js && node lib/suggested-times.test.js && node lib/schedule-order.test.js && node lib/schedule-warning-display.test.js && node lib/location-selection.test.js && node --experimental-strip-types lib/schedule-api.test.ts && node --experimental-strip-types lib/assistant-autosave.test.ts && node --experimental-strip-types lib/clarification-messages.test.ts",
     "start": "next start",
     "lint": "eslint"
   },

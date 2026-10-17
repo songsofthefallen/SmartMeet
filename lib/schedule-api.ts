@@ -86,6 +86,8 @@ export type ScheduleExtraction = {
   timezone: string | null;
   preparation_duration_minutes: number | null;
   travel_duration_minutes: number | null;
+  origin_description: string | null;
+  destination_description: string | null;
   time_intent_ambiguous: boolean;
   ambiguities: string[];
 };
@@ -100,12 +102,20 @@ export type ScheduleExtractionReview = {
 };
 
 export class ScheduleApiError extends Error {
+  readonly status: number | null;
+  readonly retryAfterSeconds: number | null;
+  readonly code: string | null;
+
   constructor(
     message: string,
-    readonly status: number | null,
-    readonly retryAfterSeconds: number | null = null,
+    status: number | null,
+    retryAfterSeconds: number | null = null,
+    code: string | null = null,
   ) {
     super(message);
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+    this.code = code;
     this.name = "ScheduleApiError";
   }
 }
@@ -200,6 +210,8 @@ function isScheduleExtraction(value: unknown): value is ScheduleExtraction {
     isNullableString(value.timezone) &&
     (typeof value.preparation_duration_minutes === "number" || value.preparation_duration_minutes === null) &&
     (typeof value.travel_duration_minutes === "number" || value.travel_duration_minutes === null) &&
+    isNullableString(value.origin_description) &&
+    isNullableString(value.destination_description) &&
     typeof value.time_intent_ambiguous === "boolean" &&
     isStringList(value.ambiguities)
   );
@@ -260,9 +272,15 @@ async function request<T>(
     if (response.status === 401) throw new ScheduleApiError("Your session expired or could not be verified. Refresh the page and sign in again.", 401);
     if (response.status === 404) throw new ScheduleApiError("This schedule is no longer available. Refresh the schedule list and try again.", 404);
     if (response.status === 409 && isRecord(payload)) {
+      if (isRecord(payload.detail) && typeof payload.detail.code === "string" && typeof payload.detail.message === "string") {
+        throw new ScheduleApiError(payload.detail.message, 409, null, payload.detail.code);
+      }
       throw new ScheduleApiError(validationMessage(payload.detail) ?? "A schedule with this name already exists in your account.", 409);
     }
     if (response.status === 422 && isRecord(payload)) {
+      if (isRecord(payload.detail) && typeof payload.detail.code === "string" && typeof payload.detail.message === "string") {
+        throw new ScheduleApiError(payload.detail.message, 422, null, payload.detail.code);
+      }
       throw new ScheduleApiError(validationMessage(payload.detail) ?? "Check the schedule fields and try again.", 422);
     }
     if (response.status === 429) {
@@ -270,6 +288,9 @@ async function request<T>(
       const retryAfter = retryHeader && /^\d+$/.test(retryHeader) ? Number(retryHeader) : null;
       const detail = isRecord(payload) && typeof payload.detail === "string" ? payload.detail : "Route refresh is temporarily limited. Try again later.";
       throw new ScheduleApiError(detail, 429, retryAfter);
+    }
+    if (response.status === 504 && isRecord(payload) && typeof payload.detail === "string") {
+      throw new ScheduleApiError(payload.detail, 504);
     }
     if (response.status >= 500) throw new ScheduleApiError("The schedule service could not complete that request. Try again later.", response.status);
     throw new ScheduleApiError("The schedule request was rejected. Check the details and try again.", response.status);
@@ -304,7 +325,7 @@ export const scheduleApi = {
   get(id: number, token: string | null) {
     return request<Schedule>(`/schedules/${id}`, token, "GET", undefined, isSchedule);
   },
-  create(input: ScheduleInput, token: string | null) {
+  create(input: ScheduleInput & { continue_without_route?: boolean }, token: string | null) {
     return request<Schedule>("/schedules", token, "POST", input, isSchedule);
   },
   update(id: number, input: ScheduleUpdateInput, token: string | null) {
@@ -315,5 +336,8 @@ export const scheduleApi = {
   },
   refreshTravelEstimate(id: number, token: string | null) {
     return request<Schedule>(`/schedules/${id}/travel-estimate/refresh`, token, "POST", undefined, isSchedule);
+  },
+  refreshWeatherEstimate(id: number, token: string | null) {
+    return request<Schedule>(`/schedules/${id}/weather-estimate/refresh`, token, "POST", undefined, isSchedule);
   },
 };

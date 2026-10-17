@@ -16,6 +16,7 @@ from schemas import LocationSelection, TrafficCoordinate, TrafficSection, Travel
 
 logger = logging.getLogger(__name__)
 TOMTOM_REVERSE_GEOCODE_URL = "https://api.tomtom.com/search/2/reverseGeocode"
+TOMTOM_ROUTE_TIMEOUT_SECONDS = 35.0
 _REVERSE_GEOCODE_CACHE_TTL_SECONDS = 6 * 60 * 60
 _REVERSE_GEOCODE_CACHE_MAX_ENTRIES = 500
 _REVERSE_GEOCODE_REQUEST_LIMIT_PER_ROUTE = 3
@@ -284,6 +285,25 @@ class RoutingProviderConfigurationError(Exception):
 class RoutingProviderError(Exception):
     """A route could not be obtained or validated."""
 
+    def __init__(self, *args: object, reason: str = "provider_error") -> None:
+        super().__init__(*args)
+        self.reason = reason
+
+
+def _tomtom_error_reason(response: httpx.Response) -> str:
+    """Classify allowlisted provider codes without retaining raw response text."""
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        return "provider_error"
+    detailed = payload.get("detailedError") if isinstance(payload, dict) else None
+    code = detailed.get("code") if isinstance(detailed, dict) else None
+    if code == "COMPUTE_TIME_LIMIT_EXCEEDED":
+        return "compute_limit"
+    if isinstance(code, str) and code in {"NO_ROUTE_FOUND", "ROUTE_NOT_FOUND"}:
+        return "no_route"
+    return "provider_error"
+
 
 class TomTomRoutingService:
     def __init__(self, api_key: str | None = None) -> None:
@@ -323,13 +343,23 @@ class TomTomRoutingService:
             response = httpx.get(
                 f"{TOMTOM_ROUTE_URL}/{coordinates}/json",
                 params=params,
-                timeout=5.0,
+                timeout=TOMTOM_ROUTE_TIMEOUT_SECONDS,
             )
-            response.raise_for_status()
-            retrieved_at = datetime.now(timezone.utc)
-            payload = response.json()
+        except httpx.TimeoutException as exc:
+            raise RoutingProviderError(reason="timeout") from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise RoutingProviderError from exc
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RoutingProviderError(reason=_tomtom_error_reason(response)) from exc
+        retrieved_at = datetime.now(timezone.utc)
+        try:
+            payload = response.json()
+        except (ValueError, TypeError) as exc:
+            raise RoutingProviderError(reason="invalid_response") from exc
+        if isinstance(payload, dict) and payload.get("routes") == []:
+            raise RoutingProviderError(reason="no_route")
         try:
             routes = payload["routes"]
             route = routes[0]

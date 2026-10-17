@@ -133,6 +133,8 @@ def extraction_review(*, missing_intent: bool = False) -> ScheduleExtractionRevi
                 "timezone": "Asia/Manila",
                 "preparation_duration_minutes": None,
                 "travel_duration_minutes": None,
+                "origin_description": None,
+                "destination_description": None,
                 "time_intent_ambiguous": missing_intent,
                 "ambiguities": ["Arrival or departure is unclear."] if missing_intent else [],
             }
@@ -401,6 +403,8 @@ def test_extraction_endpoint_parses_title_free_provider_response(
         "timezone": "Asia/Manila",
         "preparation_duration_minutes": None,
         "travel_duration_minutes": None,
+        "origin_description": "Santa Maria, Bulacan",
+        "destination_description": "University of Santo Tomas",
         "time_intent_ambiguous": False,
         "ambiguities": [],
     }
@@ -429,6 +433,8 @@ def test_extraction_endpoint_parses_title_free_provider_response(
     assert response.status_code == 200
     assert response.json()["status"] == "ready_for_review"
     assert response.json()["extraction"]["target_time_local"] == "07:00:00"
+    assert response.json()["extraction"]["origin_description"] == "Santa Maria, Bulacan"
+    assert response.json()["extraction"]["destination_description"] == "University of Santo Tomas"
     assert "title" not in response.json()["extraction"]
 
 

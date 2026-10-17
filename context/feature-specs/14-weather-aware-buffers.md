@@ -7,6 +7,7 @@ Warn users about forecast conditions at their selected origin and destination th
 ## Behavior
 
 - Reuse Open-Meteo and assess hourly conditions at the selected origin near calculated departure and destination near calculated arrival.
+- When travel duration is unknown, assess both selected endpoints near the intended event instant instead. Clearly label these as endpoint snapshots, not estimates of departure/arrival conditions.
 - Preserve routing provider duration and traffic information as the travel estimate. Preserve the user's configured travel and preparation buffers as independent deterministic inputs.
 - Use the existing initial advisory rules: precipitation at least 2.5 mm/hour, heavy rain at least 7.5 mm/hour, snowfall at least 1 cm/hour, wind at least 50 km/hour, and WMO thunderstorm codes 95, 96, or 99. These are application thresholds, not provider severity guarantees.
 - Create endpoint-specific advisories with the condition and sampled forecast hour. Warn that conditions may affect the trip; do not describe them as measured delays or guaranteed effects.

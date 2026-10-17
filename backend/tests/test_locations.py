@@ -143,3 +143,19 @@ def test_selected_location_persists_with_schedule(api_db: None, signing_key: str
     assert created.json()["location"]["latitude"] == 14.5995
     reloaded = client.get(f"/schedules/{created.json()['id']}", headers=headers)
     assert reloaded.json()["location"] == created.json()["location"]
+
+    updated = client.patch(
+        f"/schedules/{created.json()['id']}", headers=headers,
+        json={"title": "Renamed class"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["location"] == created.json()["location"]
+
+    replacement = sample_location().model_copy(update={"name": "Central School Annex", "latitude": 14.61})
+    changed = client.patch(
+        f"/schedules/{created.json()['id']}", headers=headers,
+        json={"location": replacement.model_dump(mode="json")},
+    )
+    assert changed.status_code == 200
+    assert changed.json()["location"]["name"] == "Central School Annex"
+    assert changed.json()["location"]["latitude"] == 14.61

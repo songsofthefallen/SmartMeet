@@ -1,5 +1,17 @@
 ## Current Progress
 
+### Spec 15 - AI origin/destination extraction and location resolution
+
+- Implemented: extraction now returns validated nullable origin/destination descriptions separately from the existing schedule fields. The frontend searches each stated description through the existing authenticated backend TomTom Search API and presents the returned candidates through the existing `LocationPicker`; it never selects a candidate automatically. Place-aware autosave waits until each extracted description has a selected candidate. User edits to a location query clear its prior selection; unrelated schedule edits retain selections in the existing schedule request and JSON fields.
+- Missing required schedule information continues through the existing targeted clarification flow. Location-free schedules retain current autosave eligibility. Empty results and provider failures leave locations unselected and report that safely. TomTom keys and requests remain backend-only.
+- Existing `LocationSelection`, `LocationPicker`, authenticated search API, schedule JSON fields, and create/update/idempotency/routing flow are reused. No alternative routes, traffic/weather/time changes, or migrations were made. The spec path's internal heading says “Spec 16”; implementation followed its content without changing its numbering.
+- Changed files: backend extraction schema/service and extraction/location tests; schedule workspace, API types, autosave eligibility/tests, clarification copy/test, location selection helper/test; frontend test script; decisions and this tracker.
+- Verification: backend pytest **244 passed**; frontend tests passed (including autosave, clarification, and location selection suites); ESLint, `npx tsc --noEmit`, production build, and `git diff --check` passed. No live AI/TomTom request or interactive browser workflow was performed.
+- No schema change or migration was required or applied. Manual verification with the configured AI provider and browser location candidate/selection flow remains outstanding.
+- Follow-up UI request: removed latitude/longitude from saved schedule location details and from the confirmed location display in the editor. Coordinates remain in API data for routing and are still used internally to identify search candidates; no persistence or routing changes.
+- Spec file note: `context/feature-specs/15-ai-location-extraction.md` has a title heading numbered Spec 16; following its requirements without modifying the spec numbering.
+- Verification pending.
+
 ### Prevent misleading traffic and weather for past schedules
 
 - Added an aware UTC instant comparison to schedule responses. `is_past` follows the calculated intended departure instant when available (including arrival-intent schedules), otherwise the target instant; it does not use formatted display values or alter the saved target.
@@ -473,3 +485,31 @@ Implemented and verified. Added the SQLAlchemy schedule model, Pydantic create/u
 ## Tracker Maintenance Rule
 
 For each feature-spec change, keep this tracker synchronized with the spec's actual scope and results. The active section should describe only the current spec. When moving to another spec, move the prior spec out of the active section into **Completed Specs**, with its implementation summary, changed files, actual verification results, and outstanding verification clearly recorded. Do not claim external or manual checks that were not performed. Preserve product decisions and open verification items without duplicating a completed spec as the current goal.
+
+### Long-distance route estimate failure handling
+
+- Confirmed code path: TomTom route requests previously had a five-second timeout; timeout/provider errors were mapped to generic HTTP 502, and the frontend replaced 5xx details with a generic service message. The exact reported overseas request is not logged, so its individual provider response cannot be confirmed.
+- Increased route request timeout to 35 seconds, classified local timeouts and TomTom's documented compute-limit response, and added safe actionable responses for timeout/compute-limit and explicit no-route errors. Refresh failure continues preserving the prior estimate; no fabricated estimate is created. Users are told they can enter travel duration manually.
+- Added backend tests for timeout classification, safe error classification, timeout value, refresh responses, and persisted-estimate preservation. No schema or migration change.
+- Verification: routing tests 50 passed; frontend tests passed; ESLint, TypeScript, production build, and `git diff --check` passed. The first pytest invocation lacked the backend import path and failed collection; rerunning with `PYTHONPATH=.` passed. Pytest emitted a cache warning due to an existing cache directory conflict. No live overseas request was reproduced.
+
+### Confirm no-route schedules before saving
+
+- Schedule creation now stops before persistence when TomTom explicitly returns no drivable route. The form explains that traffic/weather estimates will be unavailable and asks whether to save without the route estimate or review the locations.
+- Confirmed retry uses the same idempotency key, skips repeating route lookup, saves with travel duration unavailable, and retains the existing unavailable weather response. Other provider failures preserve prior creation behavior; refresh error handling is unchanged.
+- Added backend regression coverage proving no schedule/weather request occurs before confirmation, the confirmed retry saves without re-requesting routing, and the schedule has no fabricated travel estimate. No migration or persisted schema change.
+- Verification: 76 routing and schedule API tests passed; frontend tests passed; ESLint, TypeScript, production build, and git diff --check passed. Pytest reported the existing cache-directory warning. No interactive browser verification was performed.
+
+### Explain weather timing and hide empty travel card
+
+- At this stage, weather stayed unavailable without a duration; this behavior was changed in the follow-up below.
+- Upcoming schedules without a saved route estimate no longer render the Travel and traffic card. The route retry action remains available separately, and past schedules retain the unavailable historical-reference message. Added frontend helper coverage for these display conditions.
+- Backend tests at that stage confirmed weather could assess when duration was known without a route estimate.
+- Verification: backend routing and schedule API tests **77 passed**; frontend tests passed; ESLint and TypeScript passed. Production build and `git diff --check` passed.
+
+### Inform no-route refreshes and assess weather without route duration
+
+- Explicit no-drivable-route responses from route refresh now carry a safe code/message and appear as an informational status, not an error alert. The API client's typed error parsing is covered by a frontend test.
+- When a schedule has no traffic estimate, its action now refreshes weather only through a dedicated endpoint. Weather assessments use the schedule event instant for both endpoints when route duration is unknown; the UI labels these as endpoint snapshots, not trip-timed forecasts. With a duration, the existing departure/arrival forecast times remain unchanged.
+- Added backend coverage for no-route refresh mapping and weather-only refresh; updated no-route create coverage to verify weather can be assessed without route duration. Updated Spec 14 and recorded DEC-034. No migration or schema change.
+- Verification: backend routing/schedule API tests **78 passed**; frontend tests passed (including the new API error mapping test); ESLint, TypeScript, production build, and git diff --check passed. Pytest emitted the existing cache-directory warning. No interactive browser verification was performed.

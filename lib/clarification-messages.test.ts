@@ -15,6 +15,8 @@ test("school plan clarification shows friendly deduplicated questions, never fie
       timezone: "Asia/Manila",
       preparation_duration_minutes: null,
       travel_duration_minutes: null,
+      origin_description: null,
+      destination_description: null,
       time_intent_ambiguous: true,
       ambiguities: ["time_intent"],
     },

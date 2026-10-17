@@ -93,10 +93,11 @@ def _route_estimate(
             route_time_args["arrive_at"] = route_time
         else:
             route_time_args["depart_at"] = route_time
+    diagnostic_args = {"diagnose_unnamed_traffic_sections": True} if diagnose_unnamed_traffic_sections else {}
     return service.estimate(
         LocationSelection.model_validate(schedule.origin_location),
         LocationSelection.model_validate(schedule.location),
-        diagnose_unnamed_traffic_sections=diagnose_unnamed_traffic_sections,
+        **diagnostic_args,
         **route_time_args,
     )
 
@@ -197,10 +198,10 @@ WeatherService = Annotated[OpenMeteoWeatherService, Depends(get_weather_service)
 def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> None:
     if _is_past(schedule):
         return
-    if not schedule.origin_location or not schedule.location or schedule.travel_duration_minutes is None:
+    if not schedule.origin_location or not schedule.location:
         schedule.weather_estimate = {
             "status": "unavailable",
-            "summary": "Weather information is temporarily unavailable.",
+            "summary": "Select an origin and destination to assess weather at the route endpoints.",
             "retrieved_at": None,
             "forecast_at": None,
             "conditions": [],
@@ -213,16 +214,24 @@ def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> No
     target = target.astimezone(timezone.utc)
     origin = LocationSelection.model_validate(schedule.origin_location)
     destination = LocationSelection.model_validate(schedule.location)
-    # Weather only observes the deterministic schedule times; it never changes them.
-    times = calculate_schedule_times(
-        time_intent=schedule.time_intent,
-        target_datetime=target,
-        timezone_name=schedule.timezone,
-        travel_duration_minutes=schedule.travel_duration_minutes,
-        preparation_duration_minutes=schedule.preparation_duration_minutes,
-        settings=CalculationSettings.from_env(),
-    )
-    if times.departure_time is None or times.arrival_time is None:
+    if schedule.travel_duration_minutes is None:
+        # With no route duration, provide an endpoint snapshot around the
+        # intended event instant. UI labels these as snapshots, not trip times.
+        origin_forecast_at = destination_forecast_at = target
+    else:
+        # Weather observes deterministic trip times when a duration is known;
+        # it never changes those times.
+        times = calculate_schedule_times(
+            time_intent=schedule.time_intent,
+            target_datetime=target,
+            timezone_name=schedule.timezone,
+            travel_duration_minutes=schedule.travel_duration_minutes,
+            preparation_duration_minutes=schedule.preparation_duration_minutes,
+            settings=CalculationSettings.from_env(),
+        )
+        origin_forecast_at = times.departure_time
+        destination_forecast_at = times.arrival_time
+    if origin_forecast_at is None or destination_forecast_at is None:
         schedule.weather_estimate = {
             "status": "unavailable", "summary": "Weather information is temporarily unavailable.",
             "retrieved_at": None, "forecast_at": None, "conditions": [], "advisories": [],
@@ -230,7 +239,7 @@ def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> No
         return
     try:
         estimate = WeatherEstimate.model_validate(service.assess(
-            origin, destination, times.departure_time, times.arrival_time,
+            origin, destination, origin_forecast_at, destination_forecast_at,
         ))
     except Exception:
         estimate = WeatherEstimate(
@@ -239,8 +248,8 @@ def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> No
         )
         estimate._diagnostic = WeatherAssessmentDiagnostic(
             reason="invalid_response_values", assessment_pass=1,
-            origin_forecast_hour=times.departure_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
-            destination_forecast_hour=times.arrival_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
+            origin_forecast_hour=origin_forecast_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
+            destination_forecast_hour=destination_forecast_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:00Z"),
         )
     if estimate.status != "available":
         _log_weather_failure(estimate, assessment_pass=1)
@@ -289,11 +298,41 @@ def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser
         if existing is not None:
             return _calculate(existing)
     values = payload.model_dump()
+    continue_without_route = values.pop("continue_without_route", False)
     requested_title = values.pop("title")
     title = requested_title or _next_schedule_title(db, user_id)
     schedule = Schedule(clerk_user_id=user_id, title=title, normalized_title=_normalized_title(title), **values)
     if schedule.origin_location is not None and schedule.location is not None and schedule.travel_duration_minutes is None:
-        _refresh_route(schedule, routing)
+        if continue_without_route:
+            schedule.travel_estimate = None
+            schedule.travel_duration_minutes = None
+        elif routing is None:
+            schedule.travel_estimate = None
+            schedule.travel_duration_minutes = None
+        else:
+            try:
+                estimate = _route_estimate(schedule, routing)
+            except RoutingProviderError as exc:
+                if exc.reason == "no_route":
+                    db.rollback()
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "route_unavailable_confirmation",
+                            "message": (
+                                "TomTom could not find a drivable route between these locations. A traffic estimate "
+                                "will be unavailable, but weather can be assessed separately. Do you want to save anyway?"
+                            ),
+                        },
+                    ) from exc
+                schedule.travel_estimate = None
+                schedule.travel_duration_minutes = None
+            except (ValueError, RoutingProviderConfigurationError):
+                schedule.travel_estimate = None
+                schedule.travel_duration_minutes = None
+            else:
+                schedule.travel_estimate = estimate.model_dump(mode="json")
+                schedule.travel_duration_minutes = estimate.duration_minutes
     _refresh_weather(schedule, weather)
     _calculate(schedule)
     db.add(schedule)
@@ -432,7 +471,26 @@ def refresh_travel_estimate(
         estimate = _route_estimate(schedule, routing, diagnose_unnamed_traffic_sections=True)
     except (RoutingProviderError, RoutingProviderConfigurationError, ValueError) as exc:
         finish_attempt(db, attempt.id, "failed")
-        raise HTTPException(status_code=502, detail="The route estimate could not be refreshed. Your saved estimate was kept.") from exc
+        if isinstance(exc, RoutingProviderError) and exc.reason in {"timeout", "compute_limit"}:
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    "TomTom took too long to calculate this route. Long-distance routes can exceed its calculation limit. "
+                    "Try different locations or enter the travel duration manually. Your saved estimate was kept."
+                ),
+            ) from exc
+        if isinstance(exc, RoutingProviderError) and exc.reason == "no_route":
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "no_drivable_route",
+                    "message": (
+                        "TomTom could not find a drivable route between these locations. Traffic was not updated. "
+                        "Try different locations or enter the travel duration manually. Your saved estimate was kept."
+                    ),
+                },
+            ) from exc
+        raise HTTPException(status_code=502, detail="The route estimate could not be refreshed. Your saved estimate was kept. Try again later or enter the travel duration manually.") from exc
 
     db.expire_all()
     schedule = _owned_schedule(db, schedule_id, user_id)
@@ -448,6 +506,27 @@ def refresh_travel_estimate(
     _refresh_weather(schedule, weather)
     _calculate(schedule)
     current_attempt.state = "succeeded"
+    _commit(db)
+    db.refresh(schedule)
+    return schedule
+
+
+@router.post("/{schedule_id}/weather-estimate/refresh", response_model=ScheduleResponse)
+def refresh_weather_estimate(
+    schedule_id: int,
+    db: DbSession,
+    user_id: CurrentUser,
+    weather: WeatherService,
+) -> Schedule:
+    schedule = _owned_schedule(db, schedule_id, user_id)
+    if schedule.status != ScheduleStatus.ACTIVE:
+        raise HTTPException(status_code=409, detail="Only active schedules can refresh a weather advisory.")
+    if _is_past(schedule):
+        raise HTTPException(status_code=409, detail="This schedule has passed. A future weather forecast no longer applies.")
+    if schedule.origin_location is None or schedule.location is None:
+        raise HTTPException(status_code=409, detail="Select an origin and destination before refreshing weather.")
+
+    _refresh_weather(schedule, weather)
     _commit(db)
     db.refresh(schedule)
     return schedule

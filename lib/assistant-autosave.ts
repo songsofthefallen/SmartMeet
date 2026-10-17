@@ -5,6 +5,10 @@ export type AssistantSaveFields = {
   preparationMinutes: number | null;
   travelMinutes: number | null;
   timezoneConflictConfirmed: boolean;
+  originDescription?: string | null;
+  destinationDescription?: string | null;
+  originResolved?: boolean;
+  destinationResolved?: boolean;
 };
 
 export function isAssistantAutosaveEligible(fields: AssistantSaveFields): boolean {
@@ -13,6 +17,8 @@ export function isAssistantAutosaveEligible(fields: AssistantSaveFields): boolea
     fields.targetDateTime &&
     fields.timezone.trim() &&
     fields.timezoneConflictConfirmed &&
+    (!fields.originDescription?.trim() || fields.originResolved === true) &&
+    (!fields.destinationDescription?.trim() || fields.destinationResolved === true) &&
     [fields.preparationMinutes, fields.travelMinutes].every(
       (duration) => duration === null || (Number.isInteger(duration) && duration >= 0),
     ),

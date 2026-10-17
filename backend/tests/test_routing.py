@@ -118,6 +118,55 @@ def test_schedule_routes_with_selected_origin_and_destination_and_recalculates(a
     app.dependency_overrides.pop(get_routing_service, None)
 
 
+def test_initial_no_route_requires_confirmation_before_saving(api_db: None, signing_key: str) -> None:
+    service = StubRouting(RoutingProviderError(reason="no_route"))
+    weather = StubWeather()
+    app.dependency_overrides[get_routing_service] = lambda: service
+    app.dependency_overrides[get_weather_service] = lambda: weather
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    request = route_payload(idempotency_key="route-confirmation-0001")
+
+    needs_confirmation = client.post("/schedules", headers=headers, json=request)
+    assert needs_confirmation.status_code == 409
+    assert needs_confirmation.json()["detail"]["code"] == "route_unavailable_confirmation"
+    assert "weather can be assessed separately" in needs_confirmation.json()["detail"]["message"]
+    assert client.get("/schedules", headers=headers).json() == []
+    assert weather.calls == []
+
+    saved = client.post("/schedules", headers=headers, json=request | {"continue_without_route": True})
+    assert saved.status_code == 201
+    assert saved.json()["travel_estimate"] is None
+    assert saved.json()["travel_duration_minutes"] is None
+    assert saved.json()["weather_estimate"]["status"] == "available"
+    target = datetime.fromisoformat(saved.json()["target_datetime"].replace("Z", "+00:00"))
+    assert weather.calls == [(target, target)]
+    assert len(service.calls) == 1
+    weather_refreshed = client.post(f"/schedules/{saved.json()['id']}/weather-estimate/refresh", headers=headers)
+    assert weather_refreshed.status_code == 200
+    assert len(weather.calls) == 2
+    assert weather.calls[-1] == (target, target)
+    app.dependency_overrides.pop(get_routing_service, None)
+    app.dependency_overrides.pop(get_weather_service, None)
+
+
+def test_weather_forecast_does_not_require_a_traffic_route_when_duration_is_known(api_db: None, signing_key: str) -> None:
+    routing = StubRouting(estimate(37))
+    weather = StubWeather()
+    app.dependency_overrides[get_routing_service] = lambda: routing
+    app.dependency_overrides[get_weather_service] = lambda: weather
+    created = TestClient(app).post(
+        "/schedules", headers=bearer(signing_key),
+        json=route_payload(travel_duration_minutes=30),
+    )
+    assert created.status_code == 201
+    assert routing.calls == []
+    assert len(weather.calls) == 1
+    assert created.json()["weather_estimate"]["status"] == "available"
+    app.dependency_overrides.pop(get_routing_service, None)
+    app.dependency_overrides.pop(get_weather_service, None)
+
+
 def test_past_schedule_skips_route_and_weather_and_can_be_edited_to_future(api_db: None, signing_key: str) -> None:
     route = StubRouting(estimate(37))
     weather = StubWeather()
@@ -304,6 +353,48 @@ def test_manual_route_refresh_failure_preserves_estimate_and_counts_attempt(api_
     app.dependency_overrides.pop(get_routing_service, None)
 
 
+def test_no_route_refresh_returns_a_coded_user_actionable_result(api_db: None, signing_key: str) -> None:
+    service = StubRouting([estimate(37), RoutingProviderError(reason="no_route")])
+    app.dependency_overrides[get_routing_service] = lambda: service
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    created = client.post("/schedules", headers=headers, json=route_payload())
+    schedule_id = created.json()["id"]
+    failed = client.post(f"/schedules/{schedule_id}/travel-estimate/refresh", headers=headers)
+    assert failed.status_code == 422
+    assert failed.json()["detail"]["code"] == "no_drivable_route"
+    assert "Traffic was not updated" in failed.json()["detail"]["message"]
+    app.dependency_overrides.pop(get_routing_service, None)
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_status", "expected_text"),
+    [
+        ("timeout", 504, "took too long"),
+        ("compute_limit", 504, "calculation limit"),
+        ("no_route", 422, "drivable route"),
+    ],
+)
+def test_manual_route_refresh_explains_recoverable_provider_failures_and_keeps_estimate(
+    api_db: None, signing_key: str, reason: str, expected_status: int, expected_text: str,
+) -> None:
+    service = StubRouting([estimate(37), RoutingProviderError(reason=reason)])
+    app.dependency_overrides[get_routing_service] = lambda: service
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    created = client.post("/schedules", headers=headers, json=route_payload())
+    schedule_id = created.json()["id"]
+    original_estimate = created.json()["travel_estimate"]
+    failed = client.post(f"/schedules/{schedule_id}/travel-estimate/refresh", headers=headers)
+    assert failed.status_code == expected_status
+    detail = failed.json()["detail"]
+    message = detail["message"] if isinstance(detail, dict) else detail
+    assert expected_text in message
+    saved = client.get(f"/schedules/{schedule_id}", headers=headers).json()
+    assert saved["travel_estimate"] == original_estimate
+    app.dependency_overrides.pop(get_routing_service, None)
+
+
 def test_manual_route_refresh_per_schedule_cooldown_and_ownership(api_db: None, signing_key: str) -> None:
     service = StubRouting(estimate(37))
     app.dependency_overrides[get_routing_service] = lambda: service
@@ -427,7 +518,7 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
         assert params["sectionType"] == ["traffic", "importantRoadStretch"]
         assert params["routeRepresentation"] == "polyline"
         assert "departAt" not in params and "arriveAt" not in params
-        assert timeout <= 10
+        assert timeout == 35.0
         return Response()
 
     monkeypatch.setattr("routing_service.httpx.get", fake_get)
@@ -790,7 +881,30 @@ def test_tomtom_routing_rejects_invalid_or_missing_routes(monkeypatch: pytest.Mo
 
 
 def test_tomtom_routing_maps_timeout_to_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail(*args: object, **kwargs: object) -> None: raise httpx.ReadTimeout("secret")
+    captured: dict[str, object] = {}
+    def fail(*args: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+        raise httpx.ReadTimeout("secret")
     monkeypatch.setattr("routing_service.httpx.get", fail)
-    with pytest.raises(RoutingProviderError):
+    with pytest.raises(RoutingProviderError) as error:
         TomTomRoutingService(api_key="test-server-key").estimate(LocationSelection(name="A", latitude=1, longitude=2), LocationSelection(name="B", latitude=3, longitude=4))
+    assert error.value.reason == "timeout"
+    assert captured["timeout"] == 35.0
+
+
+@pytest.mark.parametrize(("code", "reason"), [("COMPUTE_TIME_LIMIT_EXCEEDED", "compute_limit"), ("SOME_PRIVATE_CODE", "provider_error")])
+def test_tomtom_classifies_allowlisted_computation_errors_without_exposing_payload(
+    monkeypatch: pytest.MonkeyPatch, code: str, reason: str,
+) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            request = httpx.Request("GET", "https://api.tomtom.com/routing/1/calculateRoute")
+            response = httpx.Response(400, request=request)
+            raise httpx.HTTPStatusError("provider text", request=request, response=response)
+        def json(self) -> dict[str, object]:
+            return {"detailedError": {"code": code, "message": "private provider response"}}
+    monkeypatch.setattr("routing_service.httpx.get", lambda *args, **kwargs: Response())
+    with pytest.raises(RoutingProviderError) as error:
+        TomTomRoutingService(api_key="test-server-key").estimate(LocationSelection(name="A", latitude=1, longitude=2), LocationSelection(name="B", latitude=3, longitude=4))
+    assert error.value.reason == reason
+    assert "private provider response" not in str(error.value)
