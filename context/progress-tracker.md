@@ -10,7 +10,7 @@
 - No schema change or migration was required or applied. Manual verification with the configured AI provider and browser location candidate/selection flow remains outstanding.
 - Follow-up UI request: removed latitude/longitude from saved schedule location details and from the confirmed location display in the editor. Coordinates remain in API data for routing and are still used internally to identify search candidates; no persistence or routing changes.
 - Spec file note: `context/feature-specs/15-ai-location-extraction.md` has a title heading numbered Spec 16; following its requirements without modifying the spec numbering.
-- Verification pending.
+- Verification: backend extraction, time-calculation, and schedule API tests **82 passed** (pytest emitted the existing cache warning); frontend tests passed; ESLint, `npx tsc --noEmit`, production build, and `git diff --check` passed. The initial sandboxed build hit `spawn EPERM`; rerunning with approved escalation passed. No live AI-provider request or interactive browser verification was performed.
 
 ### Prevent misleading traffic and weather for past schedules
 
@@ -513,3 +513,10 @@ For each feature-spec change, keep this tracker synchronized with the spec's act
 - When a schedule has no traffic estimate, its action now refreshes weather only through a dedicated endpoint. Weather assessments use the schedule event instant for both endpoints when route duration is unknown; the UI labels these as endpoint snapshots, not trip-timed forecasts. With a duration, the existing departure/arrival forecast times remain unchanged.
 - Added backend coverage for no-route refresh mapping and weather-only refresh; updated no-route create coverage to verify weather can be assessed without route duration. Updated Spec 14 and recorded DEC-034. No migration or schema change.
 - Verification: backend routing/schedule API tests **78 passed**; frontend tests passed (including the new API error mapping test); ESLint, TypeScript, production build, and git diff --check passed. Pytest emitted the existing cache-directory warning. No interactive browser verification was performed.
+
+### Preserve extracted clock time when an AI offset conflicts
+
+- Extraction now separates an offset-bearing model time into a naive wall-clock value plus a temporary offset for validation. It no longer clears the clock or emits a missing-time error solely because the model offset disagrees.
+- Explicit IANA timezone text takes precedence. A directly time-bound departure origin or arrival destination can establish the schedule timezone (including Tokyo); unrelated trip mentions do not. Otherwise the selected timezone remains the default. Datetime resolution uses the existing IANA timezone database and preserves DST gap/repeated-time checks. The frontend uses the backend-resolved timezone unless the backend reports a genuine timezone ambiguity.
+- Added regression coverage for Tokyo 10 AM with matching, conflicting, and missing offsets; selected Manila defaults; explicitly stated IANA zones; missing times; general trip mentions; and clarification copy. No schema or migration change.
+- Verification: backend extraction, time-calculation, and schedule API tests **82 passed** (pytest emitted the existing cache warning); frontend tests passed; ESLint, `npx tsc --noEmit`, production build, and `git diff --check` passed. The initial sandboxed build hit `spawn EPERM`; rerunning with approved escalation passed. No live AI-provider request or interactive browser verification was performed.

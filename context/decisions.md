@@ -209,3 +209,9 @@
 - Decision: When duration is known, retain forecasts near calculated departure at the origin and arrival at the destination. When duration is unknown, assess both endpoints at the intended event instant and label the results as event-time endpoint snapshots, not trip-timed forecasts. Weather does not depend on traffic observations or route availability.
 - UI: When no route estimate exists, hide the upcoming Travel and traffic card and offer a weather-only refresh action. Treat an explicit no-route response from a route refresh as an informational status instead of an error alert. Preserve the past-schedule unavailable-reference behavior.
 - Persistence: No schema or migration change; reuse the existing weather estimate JSON.
+
+## DEC-035 - Keep AI clock times separate from timezone offsets
+- Context: The AI schema accepts offset-bearing clock times even though extraction asks for local wall time. Rejecting an offset mismatch by clearing the clock value made a supplied time appear missing.
+- Decision: Strip and retain the AI-provided offset separately, preserve the wall-clock time, resolve the intended timezone from an explicit IANA timezone or a time-bound departure origin / arrival destination, and otherwise use the selected timezone. A general trip-place mention does not set the event timezone. Validate the model offset against the date-specific IANA offset; when it disagrees, use the local clock and IANA rules to obtain the UTC instant rather than corrupting the clock value.
+- Ambiguity: If a time-bound location establishes local time but its timezone cannot be resolved from an explicit zone, recognized IANA city, or model zone, retain the selected timezone and report timezone ambiguity. Existing DST gap/repeated-time clarification remains in force.
+- Persistence: No schema or migration change.

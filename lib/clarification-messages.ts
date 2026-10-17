@@ -58,7 +58,7 @@ export function clarificationQuestions(
     questions.push("That local time does not exist in this timezone. Choose another time.");
   }
   if (review.invalid_fields.includes("target_time_offset")) {
-    questions.push("The extracted time offset does not match the selected timezone. Review the local time and timezone.");
+    questions.push("The AI attached a timezone offset that does not match this schedule's timezone. The clock time was preserved; review the timezone.");
   }
   if (review.invalid_fields.includes("target_date_local")) {
     questions.push("The extracted date is invalid. Enter a valid date.");

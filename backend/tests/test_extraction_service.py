@@ -193,7 +193,7 @@ def test_model_time_offset_matching_timezone_is_normalized_to_local_wall_time() 
     assert result.resolved_target_datetime.isoformat() == "2026-10-12T00:00:00+00:00"
 
 
-def test_model_time_offset_must_match_resolved_timezone() -> None:
+def test_mismatched_model_offset_preserves_wall_clock_using_selected_timezone() -> None:
     extracted = parsed_candidate(
         target_date_local="2026-10-12",
         target_time_local="08:00:00+09:00",
@@ -207,17 +207,112 @@ def test_model_time_offset_must_match_resolved_timezone() -> None:
         user_timezone="Asia/Manila",
     )
 
-    assert result.status is ExtractionReviewStatus.NEEDS_CLARIFICATION
+    assert result.status is ExtractionReviewStatus.READY_FOR_REVIEW
     assert result.extraction is not None
-    assert result.extraction.target_time_local is None
+    assert result.extraction.target_time_local.isoformat() == "08:00:00"
     assert result.extraction.target_date_local.isoformat() == "2026-10-12"
     assert result.extraction.preparation_duration_minutes == 60
     assert result.extraction.travel_duration_minutes == 90
+    assert result.missing_fields == []
+    assert result.invalid_fields == []
+    assert result.resolved_target_datetime.isoformat() == "2026-10-12T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("model_offset", ["+09:00", "+08:00", None])
+def test_leave_tokyo_at_ten_uses_tokyo_timezone_and_preserves_clock_time(
+    model_offset: str | None,
+) -> None:
+    time_value = "10:00:00" + model_offset if model_offset else "10:00:00"
+    extracted = parsed_candidate(
+        time_intent="departure",
+        target_date_local="2026-10-12",
+        target_time_local=time_value,
+        timezone="Asia/Manila",
+        origin_description="Tokyo, Japan",
+    )
+
+    result = ScheduleExtractionService(MockExtractionClient(extracted)).extract(
+        "Leave Tokyo at 10 AM to go to Manila, Philippines tomorrow",
+        reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+        user_timezone="Asia/Manila",
+    )
+
+    assert result.status is ExtractionReviewStatus.READY_FOR_REVIEW
+    assert result.extraction is not None
+    assert result.extraction.target_time_local.isoformat() == "10:00:00"
+    assert result.extraction.timezone == "Asia/Tokyo"
+    assert result.ambiguous_fields == []
+    assert result.missing_fields == []
+    assert result.resolved_target_datetime.isoformat() == "2026-10-12T01:00:00+00:00"
+
+
+def test_a_place_mentioned_as_a_trip_does_not_override_selected_timezone() -> None:
+    extracted = parsed_candidate(
+        target_time_local="10:00:00",
+        timezone="Asia/Tokyo",
+        time_intent="departure",
+        origin_description=None,
+        destination_description="Tokyo, Japan",
+    )
+    result = ScheduleExtractionService(MockExtractionClient(extracted)).extract(
+        "Remind me at 10 AM for my Tokyo trip",
+        reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+        user_timezone="Asia/Manila",
+    )
+
+    assert result.extraction is not None
+    assert result.extraction.timezone == "Asia/Manila"
+    assert result.status is ExtractionReviewStatus.READY_FOR_REVIEW
+    assert "timezone" not in result.ambiguous_fields
+
+
+def test_reminder_without_location_uses_selected_timezone_for_offset_free_clock_time() -> None:
+    extracted = parsed_candidate(
+        time_intent="departure",
+        target_time_local="10:00:00",
+        timezone="Asia/Manila",
+    )
+    result = ScheduleExtractionService(MockExtractionClient(extracted)).extract(
+        "Remind me at 10 AM",
+        reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+        user_timezone="Asia/Manila",
+    )
+
+    assert result.status is ExtractionReviewStatus.READY_FOR_REVIEW
+    assert result.extraction.timezone == "Asia/Manila"
+    assert result.resolved_target_datetime.isoformat() == "2026-10-12T02:00:00+00:00"
+
+
+def test_explicit_iana_timezone_in_text_overrides_selected_default() -> None:
+    extracted = parsed_candidate(
+        target_time_local="10:00:00",
+        timezone="Asia/Manila",
+    )
+    result = ScheduleExtractionService(MockExtractionClient(extracted)).extract(
+        "Remind me at 10 AM in Asia/Tokyo",
+        reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+        user_timezone="Asia/Manila",
+    )
+
+    assert result.status is ExtractionReviewStatus.READY_FOR_REVIEW
+    assert result.extraction.timezone == "Asia/Tokyo"
+    assert result.resolved_target_datetime.isoformat() == "2026-10-12T01:00:00+00:00"
+
+
+def test_missing_time_remains_missing_when_no_usable_clock_value_was_returned() -> None:
+    extracted = parsed_candidate(target_time_local=None, timezone="Asia/Manila")
+    result = ScheduleExtractionService(MockExtractionClient(extracted)).extract(
+        "Leave Tokyo tomorrow",
+        reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+        user_timezone="Asia/Manila",
+    )
+
+    assert result.status is ExtractionReviewStatus.NEEDS_CLARIFICATION
     assert result.missing_fields == ["target_time_local"]
-    assert result.invalid_fields == ["target_time_offset"]
+    assert result.invalid_fields == []
 
 
-def test_explicit_model_timezone_conflict_requires_confirmation_and_keeps_values() -> None:
+def test_ungrounded_model_timezone_does_not_override_selected_timezone() -> None:
     extracted = parsed_candidate(
         target_date_local="2026-10-12",
         target_time_local="08:00:00+08:00",
@@ -231,13 +326,14 @@ def test_explicit_model_timezone_conflict_requires_confirmation_and_keeps_values
         user_timezone="Asia/Manila",
     )
 
-    assert result.status is ExtractionReviewStatus.NEEDS_CLARIFICATION
-    assert result.extraction.timezone == "Europe/Paris"
+    assert result.status is ExtractionReviewStatus.READY_FOR_REVIEW
+    assert result.extraction.timezone == "Asia/Manila"
     assert result.extraction.target_time_local.isoformat() == "08:00:00"
     assert result.extraction.target_date_local.isoformat() == "2026-10-12"
     assert result.extraction.preparation_duration_minutes == 60
     assert result.extraction.travel_duration_minutes == 90
-    assert result.ambiguous_fields == ["timezone"]
+    assert result.ambiguous_fields == []
+    assert result.resolved_target_datetime.isoformat() == "2026-10-12T00:00:00+00:00"
 
 
 def test_missing_timezone_context_requires_clarification_without_inventing_timezone() -> None:

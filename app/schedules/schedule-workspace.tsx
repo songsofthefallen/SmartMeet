@@ -312,7 +312,9 @@ export default function ScheduleWorkspace() {
           description: current.description?.trim() ? current.description : extractionText.trim(),
           time_intent: extracted.time_intent ?? current.time_intent,
           target_datetime: completeTarget ?? current.target_datetime,
-          timezone: selectedTimezone || extracted.timezone || current.timezone,
+          timezone: review.ambiguous_fields.includes("timezone")
+            ? selectedTimezone || current.timezone
+            : extracted.timezone || selectedTimezone || current.timezone,
           preparation_duration_minutes: extracted.preparation_duration_minutes ?? current.preparation_duration_minutes,
           travel_duration_minutes: extracted.travel_duration_minutes ?? current.travel_duration_minutes,
           origin_location: extracted.origin_description ? null : current.origin_location,
