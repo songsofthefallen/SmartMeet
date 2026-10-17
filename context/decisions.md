@@ -176,3 +176,9 @@
 - Context: An incident can have a useful reverse-geocoded location even when TomTom has no reliable road-name match for the traffic section.
 - Decision: Use verified route road names as the primary grouping key. If absent, group by the normalized reverse-geocoded label, render it as “Near …”, and visibly mark the group as approximate. Keep fallback text in its own schema field and never promote it to verified road metadata. Unresolved sections remain in `Road name unavailable`; delay totals continue to aggregate individual incident reports within each display group.
 - Tradeoffs: Grouping by nearby reverse-geocoded text means incidents at separate points on a long road may share a display group. Each incident remains individually listed and no incident identity is inferred from the group.
+
+## DEC-029 - Past schedules do not refresh live route or forecast data
+- Context: A schedule target can pass while the saved schedule remains active. A current-time route request or a new weather forecast would misrepresent conditions for that intended trip.
+- Decision: Compare the aware intended departure instant (calculated departure when available, otherwise the target instant) with current UTC time at each provider assessment and response. Past schedules skip route and weather requests, retain stored historical estimates, and reject manual route refresh before reserving a refresh attempt. Label past schedules and retained estimates as historical reference only. Editing a target into the future resumes normal routing and weather assessment.
+- Persistence: Past status is derived from the target instant; no schema or migration change is needed. Provider estimate JSON remains unchanged when a schedule becomes past.
+- Tradeoffs: Past status can change as time passes without a database write, so it is computed on reads and displayed from the API response.

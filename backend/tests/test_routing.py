@@ -14,6 +14,19 @@ from schemas import LocationSelection, TrafficCoordinate, TrafficSection, Travel
 from test_schedule_api import api_db, bearer, payload, signing_key
 
 
+@pytest.fixture(autouse=True)
+def freeze_schedule_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    import routers.schedules as schedule_routes
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            fixed = datetime(2026, 10, 10, tzinfo=timezone.utc)
+            return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(schedule_routes, "datetime", FrozenDateTime)
+
+
 def place(name: str, latitude: float, longitude: float) -> dict[str, object]:
     return LocationSelection(name=name, latitude=latitude, longitude=longitude).model_dump()
 
@@ -103,6 +116,86 @@ def test_schedule_routes_with_selected_origin_and_destination_and_recalculates(a
     assert len(service.calls) == 3
     assert service.calls[0][0].name == "Home"
     app.dependency_overrides.pop(get_routing_service, None)
+
+
+def test_past_schedule_skips_route_and_weather_and_can_be_edited_to_future(api_db: None, signing_key: str) -> None:
+    route = StubRouting(estimate(37))
+    weather = StubWeather()
+    app.dependency_overrides[get_routing_service] = lambda: route
+    app.dependency_overrides[get_weather_service] = lambda: weather
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    created = client.post("/schedules", headers=headers, json=route_payload(
+        target_datetime="2000-01-01T09:00:00+08:00", travel_duration_minutes=None,
+    ))
+    assert created.status_code == 201
+    past = created.json()
+    assert past["is_past"] is True
+    assert past["travel_estimate"] is None
+    assert past["weather_estimate"] is None
+    assert route.calls == []
+    assert weather.calls == []
+    schedule_id = past["id"]
+    refresh = client.post(f"/schedules/{schedule_id}/travel-estimate/refresh", headers=headers)
+    assert refresh.status_code == 409
+    assert route.calls == []
+
+    updated = client.patch(f"/schedules/{schedule_id}", headers=headers, json={
+        "target_datetime": "2099-01-01T09:00:00+08:00",
+    })
+    assert updated.status_code == 200
+    assert updated.json()["is_past"] is False
+    assert updated.json()["travel_estimate"] is not None
+    assert len(route.calls) == 1
+    assert len(weather.calls) == 1
+    # The same persisted row and user-entered fields survive the time edits.
+    assert updated.json()["id"] == schedule_id
+    assert updated.json()["title"] == past["title"]
+    app.dependency_overrides.pop(get_routing_service, None)
+    app.dependency_overrides.pop(get_weather_service, None)
+
+
+def test_arrival_schedule_is_past_when_calculated_departure_has_passed(api_db: None, signing_key: str) -> None:
+    route = StubRouting(estimate(37))
+    weather = StubWeather()
+    app.dependency_overrides[get_routing_service] = lambda: route
+    app.dependency_overrides[get_weather_service] = lambda: weather
+    response = TestClient(app).post("/schedules", headers=bearer(signing_key), json=route_payload(
+        time_intent="arrival", target_datetime="2026-10-10T00:10:00Z", travel_duration_minutes=30,
+    ))
+    assert response.status_code == 201
+    assert response.json()["calculated_departure_time"] == "2026-10-09T23:40:00Z"
+    assert response.json()["is_past"] is True
+    assert route.calls == []
+    assert weather.calls == []
+    app.dependency_overrides.pop(get_routing_service, None)
+    app.dependency_overrides.pop(get_weather_service, None)
+
+
+def test_past_edit_preserves_historical_route_and_weather_estimates(api_db: None, signing_key: str) -> None:
+    route = StubRouting(estimate(37))
+    weather = StubWeather()
+    app.dependency_overrides[get_routing_service] = lambda: route
+    app.dependency_overrides[get_weather_service] = lambda: weather
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    created = client.post("/schedules", headers=headers, json=route_payload(
+        target_datetime="2099-01-01T09:00:00+08:00", travel_duration_minutes=None,
+    ))
+    assert created.status_code == 201
+    original_route = created.json()["travel_estimate"]
+    original_weather = created.json()["weather_estimate"]
+    updated = client.patch(f"/schedules/{created.json()['id']}", headers=headers, json={
+        "target_datetime": "2000-01-01T09:00:00+08:00",
+    })
+    assert updated.status_code == 200
+    assert updated.json()["is_past"] is True
+    assert updated.json()["travel_estimate"] == original_route
+    assert updated.json()["weather_estimate"] == original_weather
+    assert len(route.calls) == 1
+    assert len(weather.calls) == 1
+    app.dependency_overrides.pop(get_routing_service, None)
+    app.dependency_overrides.pop(get_weather_service, None)
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,14 @@
 ## Current Progress
 
+### Prevent misleading traffic and weather for past schedules
+
+- Added an aware UTC instant comparison to schedule responses. `is_past` follows the calculated intended departure instant when available (including arrival-intent schedules), otherwise the target instant; it does not use formatted display values or alter the saved target.
+- Schedule create/edit skips route and weather provider requests for past targets. Existing travel/weather estimate JSON is preserved as historical reference. Editing a past target to a future instant resumes normal routing and weather assessment. Manual route refresh returns HTTP 409 before consuming a refresh attempt when the schedule has passed.
+- Detail UI identifies past schedules, explains that live traffic and future forecasts no longer apply, labels saved route data with its retrieval time as historical reference, states when no useful past estimate exists, and hides manual refresh while past. Schedule edit and cancel controls remain available.
+- Follow-up UI refinement: suppress the top-level after-departure route warning only for past schedules because the historical-estimate notice already covers it. The 15-minute stale warning is also suppressed for past schedules, while remaining for stale upcoming schedules; fresh upcoming estimates do not show it. These checks use the backend's existing `is_past` result. The banner and timestamped historical notice remain visible. Frontend regression tests cover all three stale-warning cases and both retained notices.
+- Added regression coverage for future, just-passed, and long-past aware instants across timezone representations; arrival departures already passed; provider-call suppression; historical estimate preservation; future edit recovery; refresh rejection; and retaining schedule identity and title.
+- No schema or migration change. Verification: backend pytest **242 passed** in the prior change; frontend tests, ESLint, `npx tsc --noEmit`, production build, and `git diff --check` passed for the UI refinements.
+
 ### Remove duplicate locations and harden traffic incident details
 
 - Confirmed location duplication: event details rendered each incident's reverse-geocoded `approximate_location` even when that same value already appeared in its group heading. The presentation helper now omits that duplicate and only keeps an incident location when it adds context beyond the group heading.

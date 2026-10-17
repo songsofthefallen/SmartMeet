@@ -37,6 +37,7 @@ export type TrafficSectionEstimate = {
 
 export type Schedule = {
   id: number;
+  is_past: boolean;
   title: string;
   description: string | null;
   location: LocationSelection | null;
@@ -119,6 +120,7 @@ function isSchedule(value: unknown): value is Schedule {
   if (!isRecord(value)) return false;
   return (
     typeof value.id === "number" &&
+    typeof value.is_past === "boolean" &&
     typeof value.title === "string" &&
     (typeof value.description === "string" || value.description === null) &&
     (value.location === null || isLocation(value.location)) &&

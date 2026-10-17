@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import create_engine
@@ -210,6 +211,17 @@ def test_route_warning_compares_aware_instants_not_displayed_minutes(
     )
 
     assert (response.route_warning is not None) is has_warning
+
+
+@pytest.mark.parametrize("offset", [timedelta(days=1), -timedelta(seconds=1), -timedelta(days=3650)])
+def test_response_past_status_uses_aware_instants_across_timezones(offset: timedelta) -> None:
+    now = datetime.now(timezone.utc)
+    target = now + offset
+    manila_representation = target.astimezone(ZoneInfo("Asia/Manila"))
+    response = traffic_warning_response("Asia/Manila", manila_representation, now)
+
+    assert response.is_past is (target <= now)
+    assert response.target_datetime.astimezone(timezone.utc) == target
 
 
 def test_schedule_model_constraints_and_indexes_are_declared() -> None:

@@ -136,6 +136,14 @@ class ScheduleResponse(BaseModel):
 
     @computed_field
     @property
+    def is_past(self) -> bool:
+        target = self.calculated_departure_time or self.target_datetime
+        if target.tzinfo is None or target.utcoffset() is None:
+            target = target.replace(tzinfo=timezone.utc)
+        return target.astimezone(timezone.utc) <= datetime.now(timezone.utc)
+
+    @computed_field
+    @property
     def route_warning(self) -> str | None:
         estimate = self.travel_estimate
         if estimate is None:

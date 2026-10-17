@@ -39,6 +39,8 @@ RoutingService = Annotated[TomTomRoutingService | None, Depends(get_routing_serv
 
 
 def _refresh_route(schedule: Schedule, service: TomTomRoutingService | None) -> None:
+    if _is_past(schedule):
+        return
     if schedule.origin_location is None or schedule.location is None:
         if schedule.travel_estimate is not None:
             schedule.travel_duration_minutes = None
@@ -83,6 +85,8 @@ def _route_estimate(
     if target.tzinfo is None or target.utcoffset() is None:
         target = target.replace(tzinfo=timezone.utc)
     route_time = target.astimezone(timezone.utc)
+    if route_time <= datetime.now(timezone.utc):
+        raise ValueError("Past schedules cannot request a live route estimate")
     route_time_args = {}
     if route_time > datetime.now(timezone.utc):
         if schedule.time_intent.value == "arrival":
@@ -107,6 +111,22 @@ def _owned_schedule(db: Session, schedule_id: int, user_id: str) -> Schedule:
     if schedule is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Schedule not found")
     return schedule
+
+
+def _is_past(schedule: Schedule) -> bool:
+    target = schedule.calculated_departure_time or schedule.target_datetime
+    if schedule.time_intent.value == "arrival" and schedule.travel_duration_minutes is not None:
+        target = calculate_schedule_times(
+            time_intent=schedule.time_intent,
+            target_datetime=schedule.target_datetime,
+            timezone_name=schedule.timezone,
+            travel_duration_minutes=schedule.travel_duration_minutes,
+            preparation_duration_minutes=schedule.preparation_duration_minutes,
+            settings=CalculationSettings.from_env(),
+        ).departure_time or target
+    if target.tzinfo is None or target.utcoffset() is None:
+        target = target.replace(tzinfo=timezone.utc)
+    return target.astimezone(timezone.utc) <= datetime.now(timezone.utc)
 
 
 def _commit(db: Session) -> None:
@@ -175,6 +195,8 @@ WeatherService = Annotated[OpenMeteoWeatherService, Depends(get_weather_service)
 
 
 def _refresh_weather(schedule: Schedule, service: OpenMeteoWeatherService) -> None:
+    if _is_past(schedule):
+        return
     if not schedule.origin_location or not schedule.location or schedule.travel_duration_minutes is None:
         schedule.weather_estimate = {
             "status": "unavailable",
@@ -345,7 +367,8 @@ def update_schedule(
             "travel_duration_minutes" in payload.model_fields_set
             and payload.travel_duration_minutes is None
         )
-        if route_inputs_changed or duration_cleared:
+        target_changed = "target_datetime" in payload.model_fields_set or "time_intent" in payload.model_fields_set
+        if route_inputs_changed or duration_cleared or (target_changed and not _is_past(schedule)):
             _refresh_route(schedule, routing)
         elif (
             "travel_duration_minutes" in payload.model_fields_set
@@ -354,7 +377,7 @@ def update_schedule(
             # An explicit duration edit is a manual value, so old provider metadata
             # must not be presented as if it described that value.
             schedule.travel_estimate = None
-        if route_inputs_changed or duration_cleared or "travel_duration_minutes" in payload.model_fields_set or "target_datetime" in payload.model_fields_set or "time_intent" in payload.model_fields_set:
+        if route_inputs_changed or duration_cleared or "travel_duration_minutes" in payload.model_fields_set or target_changed:
             _refresh_weather(schedule, weather)
         _calculate(schedule)
         _commit(db)
@@ -392,6 +415,8 @@ def refresh_travel_estimate(
         raise HTTPException(status_code=409, detail="Select an origin and destination before refreshing the route.")
     if schedule.status != ScheduleStatus.ACTIVE:
         raise HTTPException(status_code=409, detail="Only active schedules can refresh a route estimate.")
+    if _is_past(schedule):
+        raise HTTPException(status_code=409, detail="This schedule has passed. Live traffic refresh is unavailable; edit the departure time to a future time to refresh.")
     try:
         attempt = reserve_attempt(db, user_id, schedule_id)
     except RouteRefreshRateLimited as exc:
