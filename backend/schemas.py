@@ -225,6 +225,19 @@ class TrafficCoordinate(BaseModel):
     longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
 
 
+class RouteLandmarksRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    route_points: list[TrafficCoordinate] = Field(min_length=2, max_length=500)
+
+
+class RouteLandmark(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Annotated[str, StringConstraints(min_length=1, max_length=160)]
+    category: Annotated[str, StringConstraints(pattern="^(hospital|school)$")]
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
+
+
 class WeatherPointForecast(BaseModel):
     model_config = ConfigDict(extra="forbid")
     condition: Annotated[str, StringConstraints(min_length=1, max_length=80)]

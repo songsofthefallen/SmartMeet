@@ -35,6 +35,7 @@ export type TrafficSectionEstimate = {
   end_coordinates: { latitude: number; longitude: number } | null;
 };
 export type RouteAlternativeEstimate = { route_id: string; duration_seconds: number; duration_minutes: number; distance_meters: number | null; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: TrafficSectionEstimate[]; road_names: string[]; geometry?: { latitude: number; longitude: number }[] };
+export type RouteLandmarkEstimate = { name: string; category: "hospital" | "school"; latitude: number; longitude: number };
 
 export type Schedule = {
   id: number;
@@ -323,7 +324,15 @@ function isRouteOptions(value: unknown): value is { alternatives: RouteAlternati
     (option.geometry === undefined || (Array.isArray(option.geometry) && option.geometry.every((point) => isRecord(point) && typeof point.latitude === "number" && typeof point.longitude === "number"))));
 }
 
+function isRouteLandmarks(value: unknown): value is RouteLandmarkEstimate[] {
+  return Array.isArray(value) && value.every((item) => isRecord(item) && typeof item.name === "string" &&
+    (item.category === "hospital" || item.category === "school") && typeof item.latitude === "number" && typeof item.longitude === "number");
+}
+
 export const scheduleApi = {
+  routeLandmarks(route_points: NonNullable<RouteAlternativeEstimate["geometry"]>, token: string | null) {
+    return request<RouteLandmarkEstimate[]>("/schedules/route-landmarks", token, "POST", { route_points }, isRouteLandmarks);
+  },
   async routeMap(bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number }, token: string | null): Promise<Blob> {
     const query = new URLSearchParams(Object.entries(bounds).map(([key, value]) => [key, String(value)]));
     let response: Response;

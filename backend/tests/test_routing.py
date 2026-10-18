@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from main import app
 from routers.schedules import get_routing_service
 from routers.schedules import get_weather_service
-from routing_service import RoutingProviderError, TomTomRoutingService, _reverse_geocode_cache, _reverse_geocode_cache_lock, _reverse_geocode_location, _traffic_sections
+from routing_service import RoutingProviderError, TomTomRoutingService, _reverse_geocode_cache, _reverse_geocode_cache_lock, _reverse_geocode_location, _sample_route_geometry, _traffic_sections
 from schemas import LocationSelection, TrafficCoordinate, TrafficSection, TravelEstimate, WeatherAdvisory, WeatherAssessmentDiagnostic, WeatherEstimate
 from test_schedule_api import api_db, bearer, payload, signing_key
 
@@ -544,6 +544,17 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
     assert result.traffic_sections[1].end_coordinates is None
     assert len(result.alternatives[0].geometry) == 3
     assert before_request <= result.retrieved_at <= datetime.now(timezone.utc)
+
+
+def test_route_geometry_sampling_preserves_both_route_endpoints() -> None:
+    provider_points = [
+        {"latitude": 10 + index / 10000, "longitude": 20 + index / 10000}
+        for index in range(1000)
+    ]
+    sampled = _sample_route_geometry(provider_points)
+    assert len(sampled) == 500
+    assert sampled[0] == TrafficCoordinate(latitude=10, longitude=20)
+    assert sampled[-1] == TrafficCoordinate(latitude=10.0999, longitude=20.0999)
 
 
 def test_tomtom_parses_each_valid_route_and_ignores_invalid_alternatives(monkeypatch: pytest.MonkeyPatch) -> None:

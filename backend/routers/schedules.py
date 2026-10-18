@@ -15,10 +15,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from database import get_db
+from location_service import LocationProviderConfigurationError, LocationProviderError, TomTomSearchService
 from main import verify_clerk_token
 from map_service import MapProviderError, TomTomMapService
 from models import RouteRefreshAttempt, Schedule, ScheduleNameCounter, ScheduleStatus
-from schemas import LocationSelection, RouteOptionsRequest, ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate, WeatherAssessmentDiagnostic, WeatherEstimate
+from schemas import LocationSelection, RouteLandmark, RouteLandmarksRequest, RouteOptionsRequest, ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate, WeatherAssessmentDiagnostic, WeatherEstimate
 from routing_service import RoutingProviderConfigurationError, RoutingProviderError, TomTomRoutingService
 from time_calculation import CalculationSettings, calculate_schedule_times, recalculate_schedule
 from route_refresh_limits import RouteRefreshRateLimited, finish_attempt, reserve_attempt
@@ -51,6 +52,16 @@ def get_map_service() -> TomTomMapService | None:
 MapService = Annotated[TomTomMapService | None, Depends(get_map_service)]
 
 
+def get_route_landmark_service() -> TomTomSearchService:
+    try:
+        return TomTomSearchService()
+    except LocationProviderConfigurationError as exc:
+        raise HTTPException(status_code=503, detail="TomTom Search is not configured.") from exc
+
+
+RouteLandmarkService = Annotated[TomTomSearchService, Depends(get_route_landmark_service)]
+
+
 @router.get("/route-map")
 def get_route_map(
     user_id: CurrentUser,
@@ -80,6 +91,20 @@ def get_route_map(
             raise HTTPException(status_code=504, detail="TomTom map image request timed out. Route details are still available.") from exc
         raise HTTPException(status_code=502, detail="Map preview is temporarily unavailable.") from exc
     return Response(content=image, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@router.post("/route-landmarks", response_model=list[RouteLandmark])
+def get_route_landmarks(
+    payload: RouteLandmarksRequest,
+    user_id: CurrentUser,
+    service: RouteLandmarkService,
+) -> list[RouteLandmark]:
+    del user_id
+    try:
+        return service.landmarks_along_route(payload.route_points)
+    except LocationProviderError as exc:
+        logger.warning("TomTom along-route landmark search failed")
+        raise HTTPException(status_code=502, detail="Route landmarks are temporarily unavailable.") from exc
 
 
 def _refresh_route(schedule: Schedule, service: TomTomRoutingService | None) -> None:
@@ -498,22 +523,6 @@ def update_schedule(
         old_destination = schedule.location
         changes = payload.model_dump(exclude_unset=True)
         selected_route_id = changes.pop("selected_route_id", None)
-        if selected_route_id is not None:
-            try:
-                estimate = TravelEstimate.model_validate(schedule.travel_estimate)
-                option = next(item for item in estimate.alternatives if item.route_id == selected_route_id)
-            except (ValidationError, StopIteration, TypeError):
-                raise HTTPException(status_code=422, detail="That route is no longer available. Refresh the route estimate.")
-            estimate.duration_seconds = option.duration_seconds
-            estimate.duration_minutes = option.duration_minutes
-            estimate.traffic_delay_seconds = option.traffic_delay_seconds
-            estimate.no_traffic_travel_time_seconds = option.no_traffic_travel_time_seconds
-            estimate.historic_traffic_travel_time_seconds = option.historic_traffic_travel_time_seconds
-            estimate.live_traffic_incidents_travel_time_seconds = option.live_traffic_incidents_travel_time_seconds
-            estimate.traffic_sections = option.traffic_sections
-            estimate.selected_route_id = option.route_id
-            schedule.travel_estimate = estimate.model_dump(mode="json")
-            schedule.travel_duration_minutes = option.duration_minutes
         for field, value in changes.items():
             setattr(schedule, field, value)
         if "title" in payload.model_fields_set:
@@ -533,6 +542,15 @@ def update_schedule(
             # An explicit duration edit is a manual value, so old provider metadata
             # must not be presented as if it described that value.
             schedule.travel_estimate = None
+        if selected_route_id is not None:
+            try:
+                estimate = TravelEstimate.model_validate(schedule.travel_estimate)
+                option = next(item for item in estimate.alternatives if item.route_id == selected_route_id)
+            except (ValidationError, StopIteration, TypeError):
+                raise HTTPException(status_code=422, detail="That route is no longer available. Refresh the route estimate.")
+            estimate = _select_route(estimate, selected_route_id)
+            schedule.travel_estimate = estimate.model_dump(mode="json")
+            schedule.travel_duration_minutes = option.duration_minutes
         if route_inputs_changed or duration_cleared or "travel_duration_minutes" in payload.model_fields_set or target_changed or selected_route_id is not None:
             _refresh_weather(schedule, weather)
         _calculate(schedule)

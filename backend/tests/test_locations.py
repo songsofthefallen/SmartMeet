@@ -7,10 +7,13 @@ from location_service import (
     LocationProviderConfigurationError,
     LocationProviderError,
     TomTomSearchService,
+    _landmark_cache,
+    _landmark_cache_lock,
 )
 from main import app
-from schemas import LocationSelection
+from schemas import LocationSelection, RouteLandmark, TrafficCoordinate
 from routers.locations import get_location_service
+from routers.schedules import get_route_landmark_service
 from test_schedule_api import api_db, bearer, signing_key
 
 
@@ -24,6 +27,12 @@ class StubLocationService:
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
+
+
+class StubLandmarkService:
+    def landmarks_along_route(self, route_points: object) -> list[RouteLandmark]:
+        assert len(route_points) >= 2
+        return [RouteLandmark(name="Central Hospital", category="hospital", latitude=14.6, longitude=121.0)]
 
 
 def sample_location() -> LocationSelection:
@@ -127,6 +136,58 @@ def test_tomtom_service_requires_server_key(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr("location_service.load_dotenv", lambda **kwargs: None)
     with pytest.raises(LocationProviderConfigurationError):
         TomTomSearchService()
+
+
+def test_route_landmarks_are_authenticated_and_validated(signing_key: str) -> None:
+    client = TestClient(app)
+    request = {"route_points": [
+        {"latitude": 14.5, "longitude": 120.9},
+        {"latitude": 14.6, "longitude": 121.0},
+    ]}
+    assert client.post("/schedules/route-landmarks", json=request).status_code == 401
+    app.dependency_overrides[get_route_landmark_service] = lambda: StubLandmarkService()
+    response = client.post("/schedules/route-landmarks", headers=bearer(signing_key), json=request)
+    assert response.status_code == 200
+    assert response.json()[0]["category"] == "hospital"
+    assert client.post("/schedules/route-landmarks", headers=bearer(signing_key), json={"route_points": [{"latitude": 91, "longitude": 0}]}).status_code == 422
+    app.dependency_overrides.pop(get_route_landmark_service, None)
+
+
+def test_tomtom_landmark_search_is_bounded_validated_and_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _landmark_cache_lock:
+        _landmark_cache.clear()
+    calls = 0
+
+    class Response:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]:
+            return {"results": [
+                {"poi": {"name": "Central Hospital", "categorySet": [{"id": 7321}]}, "position": {"lat": 14.6, "lon": 121.0}},
+                {"poi": {"name": "City School", "categorySet": [{"id": 7372}]}, "position": {"lat": 14.61, "lon": 121.01}},
+                {"poi": {"name": "Bad coordinate", "categorySet": [{"id": 7372}]}, "position": {"lat": 999, "lon": 121}},
+                {"poi": {"name": "Unrequested type", "categorySet": [{"id": 1234}]}, "position": {"lat": 14.6, "lon": 121}},
+            ]}
+
+    def fake_post(url: str, *, params: dict[str, object], json: dict[str, object], timeout: float) -> Response:
+        nonlocal calls
+        calls += 1
+        assert url == "https://api.tomtom.com/search/2/searchAlongRoute/.json"
+        assert params["key"] == "server-test-key"
+        assert params["categorySet"] == "7321,7372"
+        assert params["limit"] == 20
+        assert params["maxDetourTime"] == 300
+        assert len(json["route"]["points"]) == 100
+        assert timeout == 5.0
+        return Response()
+
+    monkeypatch.setattr("location_service.httpx.post", fake_post)
+    points = [TrafficCoordinate(latitude=14.5 + index / 10000, longitude=120.9 + index / 10000) for index in range(150)]
+    service = TomTomSearchService(api_key="server-test-key")
+    results = service.landmarks_along_route(points)
+    assert [item.category for item in results] == ["hospital", "school"]
+    assert results[0].name == "Central Hospital"
+    assert service.landmarks_along_route(points) == results
+    assert calls == 1
 
 
 def test_selected_location_persists_with_schedule(api_db: None, signing_key: str) -> None:

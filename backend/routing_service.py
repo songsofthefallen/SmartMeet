@@ -213,6 +213,24 @@ def _route_point(legs: object, index: int | None) -> TrafficCoordinate | None:
         return None
 
 
+def _sample_route_geometry(raw_points: object, *, maximum: int = 500) -> list[TrafficCoordinate]:
+    """Retain route endpoints while reducing detailed provider geometry to a bounded size."""
+    if not isinstance(raw_points, list) or not raw_points or maximum < 2:
+        return []
+    count = len(raw_points)
+    indices = range(count) if count <= maximum else (round(index * (count - 1) / (maximum - 1)) for index in range(maximum))
+    geometry: list[TrafficCoordinate] = []
+    for index in indices:
+        point = raw_points[index]
+        if not isinstance(point, dict):
+            continue
+        try:
+            geometry.append(TrafficCoordinate(latitude=point.get("latitude"), longitude=point.get("longitude")))
+        except (ValueError, TypeError):
+            continue
+    return geometry
+
+
 def _traffic_sections(
     route: dict[str, object], *, diagnose_unnamed: bool = False,
     geocode: object | None = None,
@@ -387,14 +405,7 @@ class TomTomRoutingService:
                                 road_names.append(name)
                 legs = candidate.get("legs")
                 raw_points = legs[0].get("points") if isinstance(legs, list) and legs and isinstance(legs[0], dict) else []
-                geometry: list[TrafficCoordinate] = []
-                if isinstance(raw_points, list):
-                    for point in raw_points[:500]:
-                        if isinstance(point, dict):
-                            try:
-                                geometry.append(TrafficCoordinate(latitude=point.get("latitude"), longitude=point.get("longitude")))
-                            except (ValueError, TypeError):
-                                continue
+                geometry = _sample_route_geometry(raw_points)
                 route_id = str(index)
                 alternative = RouteAlternative(
                     route_id=route_id, duration_seconds=int(math.ceil(seconds)),

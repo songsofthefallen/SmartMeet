@@ -1,5 +1,14 @@
 ## Current Progress
 
+### Spec 16 follow-up - Correct route preview and add landmarks/zoom
+
+- Fixed root cause for incomplete route lines: provider geometry longer than 500 points was previously truncated at point 500, dropping the destination. Geometry is now sampled across the full path with the first and last route points retained.
+- Kept the detailed shared road map as the route preview and removed the old small per-card SVG previews that squeezed route paths into route-option cards. The map shows A/Origin and B/Destination markers plus explicit endpoint labels.
+- Added zoom in/out, reset, and drag-to-pan controls. The currently selected route now loads nearby hospitals and schools through an authenticated backend proxy to TomTom Search Along Route. Requests are limited to 100 sampled route points, 20 results, five-second timeout, and a six-hour in-process cache; invalid results are discarded and failures do not block route selection.
+- Added backend coverage for route geometry endpoint preservation, landmark request validation/authentication, provider response filtering, request bounds, and caching. No database schema change or migration is required.
+- Verification: backend pytest **278 passed**; `npm run test:frontend` passed; ESLint passed; `npx tsc --noEmit` passed; production build passed; `git diff --check` passed (Git printed line-ending normalization notices only). No interactive browser check or live landmark search was performed.
+- Remaining manual verification: inspect the route map at desktop/mobile widths, zoom and pan with mouse/touch, verify actual route alignment and endpoint pins, and confirm local hospital/school coverage with the configured TomTom Search key.
+
 ### Spec 16 follow-up - Fix TomTom map preview 502
 
 - Reproduced the map proxy failure against TomTom using the exact geographic bounds from the user's request (without printing the configured API key). TomTom returned a generic plain-text HTTP 400 `Bad request`; the FastAPI route translated that upstream rejection into its own HTTP 502. The TomTom body did not identify a rejected parameter.
