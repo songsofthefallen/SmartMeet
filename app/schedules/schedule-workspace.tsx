@@ -197,32 +197,56 @@ export default function ScheduleWorkspace() {
 
   useEffect(() => {
     if (view !== "form" || !form.origin_location || !form.location) {
-      setRouteOptions(null);
-      setSelectedRouteId(null);
-      setRouteOptionsLoading(false);
-      setRouteOptionsError(null);
-      return;
+      const clearTimer = window.setTimeout(() => {
+        setRouteOptions(null);
+        setSelectedRouteId(null);
+        setRouteOptionsLoading(false);
+        setRouteOptionsError(null);
+      }, 0);
+      return () => window.clearTimeout(clearTimer);
     }
     if (!form.target_datetime || !form.time_intent) {
-      setRouteOptions(null);
-      setSelectedRouteId(null);
-      setRouteOptionsLoading(false);
-      setRouteOptionsError(null);
-      return;
+      const clearTimer = window.setTimeout(() => {
+        setRouteOptions(null);
+        setSelectedRouteId(null);
+        setRouteOptionsLoading(false);
+        setRouteOptionsError(null);
+      }, 0);
+      return () => window.clearTimeout(clearTimer);
     }
     let targetDatetime: string;
     try {
       targetDatetime = toOffsetDateTime(form.target_datetime, form.timezone.trim());
     } catch {
-      setRouteOptions(null);
-      setSelectedRouteId(null);
-      setRouteOptionsLoading(false);
-      return;
+      const clearTimer = window.setTimeout(() => {
+        setRouteOptions(null);
+        setSelectedRouteId(null);
+        setRouteOptionsLoading(false);
+      }, 0);
+      return () => window.clearTimeout(clearTimer);
+    }
+    const savedAlternatives = selectedSchedule?.travel_estimate?.alternatives ?? [];
+    const sameAsSavedRouteContext = Boolean(editingId !== null && selectedSchedule && savedAlternatives.length > 0
+      && JSON.stringify(form.origin_location) === JSON.stringify(selectedSchedule.origin_location)
+      && JSON.stringify(form.location) === JSON.stringify(selectedSchedule.location)
+      && form.time_intent === selectedSchedule.time_intent
+      && Date.parse(targetDatetime) === Date.parse(selectedSchedule.target_datetime));
+    if (sameAsSavedRouteContext) {
+      const restoreTimer = window.setTimeout(() => {
+        setRouteOptions(savedAlternatives);
+        setSelectedRouteId((current) => savedAlternatives.some((route) => route.route_id === current)
+          ? current
+          : savedAlternatives.find((route) => route.route_id === selectedSchedule?.travel_estimate?.selected_route_id)?.route_id
+            ?? savedAlternatives[0]?.route_id
+            ?? null);
+        setRouteOptionsLoading(false);
+        setRouteOptionsError(null);
+      }, 0);
+      return () => window.clearTimeout(restoreTimer);
     }
     const generation = ++routeOptionsGeneration.current;
     const timer = window.setTimeout(() => {
       setRouteOptions(null);
-      setSelectedRouteId(null);
       setRouteOptionsLoading(true);
       setRouteOptionsError(null);
       void getToken().then((token) => scheduleApi.routeOptions({
@@ -247,7 +271,7 @@ export default function ScheduleWorkspace() {
       window.clearTimeout(timer);
       routeOptionsGeneration.current += 1;
     };
-  }, [view, editingId, form.origin_location, form.location, form.target_datetime, form.time_intent, form.timezone, getToken, routeSearchVersion]);
+  }, [view, editingId, selectedSchedule, form.origin_location, form.location, form.target_datetime, form.time_intent, form.timezone, getToken, routeSearchVersion]);
 
   function openCreate() {
     setEditingId(null);
@@ -279,8 +303,12 @@ export default function ScheduleWorkspace() {
   function openEdit(item: Schedule) {
     clearRouteUnavailableConfirmation();
     setEditingId(item.id);
-    setRouteOptions(null);
-    setSelectedRouteId(item.travel_estimate?.selected_route_id ?? item.travel_estimate?.alternatives?.[0]?.route_id ?? null);
+    const savedAlternatives = item.travel_estimate?.alternatives ?? [];
+    setRouteOptions(savedAlternatives.length ? savedAlternatives : null);
+    setSelectedRouteId(savedAlternatives.find((route) => route.route_id === item.travel_estimate?.selected_route_id)?.route_id
+      ?? savedAlternatives[0]?.route_id
+      ?? null);
+    setRouteOptionsLoading(false);
     setRouteOptionsError(null);
     setForm({
       title: item.title,
@@ -510,6 +538,21 @@ export default function ScheduleWorkspace() {
       return;
     }
 
+    const routeContextChanged = Boolean(editingId !== null && selectedSchedule && (
+      JSON.stringify(form.origin_location) !== JSON.stringify(selectedSchedule.origin_location)
+      || JSON.stringify(form.location) !== JSON.stringify(selectedSchedule.location)
+      || form.time_intent !== selectedSchedule.time_intent
+      || Date.parse(targetDateTime) !== Date.parse(selectedSchedule.target_datetime)
+    ));
+    const selectedRouteChanged = Boolean(editingId !== null && selectedRouteId
+      && selectedRouteId !== selectedSchedule?.travel_estimate?.selected_route_id);
+    if (editingId !== null && routeContextChanged && form.origin_location && form.location) {
+      if (routeOptionsLoading || (routeOptions?.length && !routeOptions.some((route) => route.route_id === selectedRouteId))) {
+        setMessage({ kind: "info", text: "Wait for the updated route options and choose one before saving." });
+        return;
+      }
+    }
+
     const input: ScheduleInput = {
       ...form,
       ...(editingId === null && extractionReview ? {} : (form.title.trim() ? { title: form.title.trim() } : {})),
@@ -520,7 +563,9 @@ export default function ScheduleWorkspace() {
       timezone: form.timezone.trim(),
       target_datetime: targetDateTime,
       ...(editingId === null && idempotencyKey.current ? { idempotency_key: idempotencyKey.current } : {}),
-      ...(selectedRouteId ? { selected_route_id: selectedRouteId } : {}),
+      ...(selectedRouteId && (editingId === null || (routeContextChanged && routeOptions?.some((route) => route.route_id === selectedRouteId)) || (!routeContextChanged && selectedRouteChanged))
+        ? { selected_route_id: selectedRouteId }
+        : {}),
     };
     saveInFlight.current = true;
     setSaving(true);
@@ -582,8 +627,7 @@ export default function ScheduleWorkspace() {
   async function refreshRouteEstimate(schedule: Schedule) {
     if (routeRefreshingId !== null) return;
     const currentTime = Date.now();
-    const until = routeCooldowns[schedule.id] ?? 0;
-    if (until > currentTime) return;
+    if ((routeCooldowns[schedule.id] ?? 0) > currentTime) return;
     setRouteRefreshingId(schedule.id);
     setRouteCooldowns((value) => ({ ...value, [schedule.id]: currentTime + 60_000 }));
     setMessage(null);
@@ -630,6 +674,7 @@ export default function ScheduleWorkspace() {
   const savedRouteOptions = selected?.travel_estimate?.alternatives ?? [];
   const savedRouteId = selected?.travel_estimate?.selected_route_id ?? "0";
   const savedRouteOption = savedRouteOptions.find((route) => route.route_id === savedRouteId) ?? savedRouteOptions[0] ?? null;
+  const savedRouteSet = useMemo(() => savedRouteOption ? [savedRouteOption] : [], [savedRouteOption]);
   const originWeatherForecastAt = selected?.weather_estimate?.origin_forecast_at ?? selected?.weather_estimate?.forecast_at ?? null;
   const destinationWeatherForecastAt = selected?.weather_estimate?.destination_forecast_at ?? null;
   const hasWeatherAdvisory = selected?.weather_estimate?.status === "available" && selected.weather_estimate.advisories.length > 0;
@@ -715,7 +760,7 @@ export default function ScheduleWorkspace() {
                 <h3 className="text-sm font-semibold">Travel and traffic</h3>
                 <p className="mt-2 text-2xl font-bold tabular-nums">{selected.travel_duration_minutes === null ? "Route estimate unavailable" : `${selected.travel_duration_minutes} min`}</p>
                 {selected.travel_estimate && <>
-                  {selected.travel_estimate && savedRouteOption && <section className="mt-3 rounded-lg border border-[var(--border)] p-3" aria-label="Saved selected route"><h3 className="text-sm font-semibold">Selected driving route</h3><RouteComparisonMap routes={[savedRouteOption]} selectedRouteId={savedRouteOption.route_id} origin={selected.origin_location} destination={selected.location} mode="view"/><p className="mt-3 text-sm font-medium">Route {savedRouteOptions.findIndex((route) => route.route_id === savedRouteOption.route_id) + 1} · {savedRouteOption.duration_minutes} min · {savedRouteOption.distance_meters === null ? "Distance unavailable" : `${(savedRouteOption.distance_meters / 1000).toFixed(1)} km`}</p>{savedRouteOption.road_names.length > 0 && <p className="mt-1 text-xs text-[var(--text-muted)]">Via {savedRouteOption.road_names.join(" · ")}</p>}</section>}
+                  {selected.travel_estimate && savedRouteOption && <section className="mt-3 rounded-lg border border-[var(--border)] p-3" aria-label="Saved selected route"><h3 className="text-sm font-semibold">Selected driving route</h3><RouteComparisonMap routes={savedRouteSet} selectedRouteId={savedRouteOption.route_id} origin={selected.origin_location} destination={selected.location} mode="view"/><p className="mt-3 text-sm font-medium">Route {savedRouteOptions.findIndex((route) => route.route_id === savedRouteOption.route_id) + 1} · {savedRouteOption.duration_minutes} min · {savedRouteOption.distance_meters === null ? "Distance unavailable" : `${(savedRouteOption.distance_meters / 1000).toFixed(1)} km`}</p>{savedRouteOption.road_names.length > 0 && <p className="mt-1 text-xs text-[var(--text-muted)]">Via {savedRouteOption.road_names.join(" · ")}</p>}</section>}
                   {showPastScheduleNotices(selected.is_past) && <p className="mt-2 rounded-lg bg-[var(--surface-secondary)] p-3 text-sm text-[var(--text-secondary)]">{historicalEstimateNotice(formatDate(selected.travel_estimate.retrieved_at, selected.timezone, true))}</p>}
                   <p className="mt-1 text-sm font-semibold">{trafficStatusLabel(selected.traffic_status)}</p>
                   {selected.traffic_delay_minutes !== null && <p className="mt-1 text-sm text-[var(--text-secondary)]">Estimated route-level traffic delay: {selected.traffic_delay_minutes} min</p>}
@@ -724,7 +769,7 @@ export default function ScheduleWorkspace() {
                 </>}
                 {!selected.travel_estimate && <p className="mt-1 text-sm text-[var(--text-muted)]">{selected.is_past ? "A useful estimate for this past trip is unavailable." : "Traffic and travel time are unavailable until a route estimate is returned."}</p>}
               </section>}
-              {selected.status === "active" && selected.origin_location && selected.location && <div className="mt-3 flex flex-wrap items-center gap-3">{!selected.is_past ? <><button type="button" className={secondaryButton} disabled={routeRefreshingId !== null || weatherRefreshingId !== null || (Boolean(selected.travel_estimate) && (routeCooldowns[selected.id] ?? 0) > clockNow)} onClick={() => void refreshRouteEstimate(selected)}><RefreshIcon />{routeRefreshingId === selected.id ? "Refreshing route..." : weatherRefreshingId === selected.id ? "Refreshing weather..." : selected.travel_estimate ? "Refresh route estimate" : "Get route estimate"}</button>{!selected.travel_estimate && <button type="button" className={secondaryButton} disabled={routeRefreshingId !== null || weatherRefreshingId !== null} onClick={() => void refreshWeatherEstimate(selected)}>{weatherRefreshingId === selected.id ? "Refreshing weather..." : "Refresh weather advisory"}</button>}</> : <span className="text-xs text-[var(--text-muted)]">Refresh unavailable for a past schedule. Edit the departure time to a future time to assess it again.</span>}{!selected.is_past && selected.travel_estimate && (routeCooldowns[selected.id] ?? 0) > clockNow && <span className="text-xs text-[var(--text-muted)]" role="status">Refresh available in {Math.ceil((routeCooldowns[selected.id] - clockNow) / 1000)}s</span>}</div>}
+              {selected.status === "active" && selected.origin_location && selected.location && <div className="mt-3 flex flex-wrap items-center gap-3">{!selected.is_past ? <><button type="button" className={secondaryButton} disabled={routeRefreshingId !== null || weatherRefreshingId !== null || (Boolean(selected.travel_estimate) && (routeCooldowns[selected.id] ?? 0) > clockNow)} onClick={() => void refreshRouteEstimate(selected)}><RefreshIcon />{routeRefreshingId === selected.id ? "Refreshing route..." : selected.travel_estimate ? "Refresh route estimate" : "Get route estimate"}</button><button type="button" className={secondaryButton} disabled={routeRefreshingId !== null || weatherRefreshingId !== null} onClick={() => void refreshWeatherEstimate(selected)}><RefreshIcon />{weatherRefreshingId === selected.id ? "Refreshing weather..." : "Refresh weather advisory"}</button></> : <span className="text-xs text-[var(--text-muted)]">This past schedule is read-only. Route and weather refreshes are unavailable.</span>}</div>}
               <section className={`mt-4 rounded-xl border p-4 ${hasWeatherAdvisory ? "border-[var(--state-warning)]/25 bg-[var(--state-warning-bg)]" : "border-[var(--border)] bg-[var(--surface)]"}`} aria-label="Weather advisory">
                 <h3 className="text-sm font-semibold">Weather advisory</h3>
                 {selected.is_past && <p className="mt-2 text-sm text-[var(--text-muted)]">Future weather advisories are no longer applicable to this past trip.</p>}

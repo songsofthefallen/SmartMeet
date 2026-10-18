@@ -1,5 +1,20 @@
 ## Current Progress
 
+### Spec 16 follow-up - Restore saved-view refresh actions
+
+- Restored only the route-estimate and weather-advisory refresh buttons in saved schedule view. Route-choice radios and the alternative list remain available only in create/edit mode.
+- The existing one-minute route cooldown, server-side rate-limit handling, and past-schedule restrictions still apply. No database migration.
+- Verification: frontend tests, ESLint, TypeScript check, production build, and `git diff --check` passed. Backend was unchanged. No browser verification performed.
+
+### Spec 16 follow-up - Separate selected-route view from route editing
+
+- Saved schedule details now render only the saved selected route on the map. The alternative list and route radios are hidden in view mode; users can choose another route by opening Edit. The route-estimate refresh and weather-advisory refresh buttons remain available for future active schedules with confirmed endpoints, with existing cooldown and past-schedule rules.
+- Create and edit forms show the available route list and comparison map. The selected path is drawn last with a wider, brighter stroke, and selection state updates the map and selected-route landmarks immediately. Edit mode reuses saved options when endpoints/time are unchanged and keeps the persisted choice selected by default. Changed route context loads fresh options.
+- Route-only edits select from the saved validated alternative set without an extra routing call. Edits to endpoints or scheduled time use the existing backend route recalculation and apply the submitted option ID before recalculating schedule times and weather timing. Existing route-refresh limits are unchanged.
+- Added regression coverage that route selection during update uses the refreshed route metadata and duration. No schema change or migration.
+- Verification: backend pytest **278 passed**; routing tests **58 passed**; frontend tests passed; ESLint passed; TypeScript check passed; production build passed; `git diff --check` passed. No browser workflow was manually verified.
+- Remaining manual verification: confirm saved detail shows one route and no route controls; open Edit, change route, verify immediate map highlight, save, then reopen and confirm the saved route alone appears. Check desktop/mobile layout.
+
 ### Spec 16 follow-up - Correct route preview and add landmarks/zoom
 
 - Fixed root cause for incomplete route lines: provider geometry longer than 500 points was previously truncated at point 500, dropping the destination. Geometry is now sampled across the full path with the first and last route points retained.

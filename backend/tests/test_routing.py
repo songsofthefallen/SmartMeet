@@ -601,21 +601,28 @@ def test_selected_alternative_replaces_estimate_and_refreshes_weather(api_db: No
         {"route_id": "0", "duration_seconds": 2220, "duration_minutes": 37, "distance_meters": 5000, "traffic_delay_seconds": 60, "no_traffic_travel_time_seconds": 1800, "historic_traffic_travel_time_seconds": None, "live_traffic_incidents_travel_time_seconds": None, "traffic_sections": [], "road_names": ["First Road"]},
         {"route_id": "1", "duration_seconds": 3000, "duration_minutes": 50, "distance_meters": 8000, "traffic_delay_seconds": 300, "no_traffic_travel_time_seconds": 2400, "historic_traffic_travel_time_seconds": None, "live_traffic_incidents_travel_time_seconds": None, "traffic_sections": [{"severity": "some_delay", "delay_seconds": 300, "road_names": ["Second Road"], "incident_type": "JAM"}], "road_names": ["Second Road"]},
     ]})
-    service = StubRouting(first)
+    refreshed = first.model_copy(deep=True)
+    refreshed.alternatives[1].duration_seconds = 3300
+    refreshed.alternatives[1].duration_minutes = 55
+    refreshed.alternatives[1].traffic_sections[0].road_names = ["Current Second Road"]
+    service = StubRouting([first, refreshed])
     app.dependency_overrides[get_routing_service] = lambda: service
     weather = StubWeather()
     app.dependency_overrides[get_weather_service] = lambda: weather
     client = TestClient(app)
     created = client.post("/schedules", headers=bearer(signing_key), json=route_payload())
     schedule_id = created.json()["id"]
-    changed = client.patch(f"/schedules/{schedule_id}", headers=bearer(signing_key), json={"selected_route_id": "1"})
+    changed = client.patch(f"/schedules/{schedule_id}", headers=bearer(signing_key), json={
+        "target_datetime": "2026-10-11T08:00:00+08:00",
+        "selected_route_id": "1",
+    })
     assert changed.status_code == 200
     body = changed.json()
     assert body["travel_estimate"]["selected_route_id"] == "1"
-    assert body["travel_estimate"]["traffic_sections"][0]["road_names"] == ["Second Road"]
-    assert body["travel_duration_minutes"] == 50
-    assert body["calculated_departure_time"] == "2026-10-10T22:10:00Z"
-    assert body["weather_estimate"]["origin_forecast_at"] == "2026-10-10T22:00:00Z"
+    assert body["travel_estimate"]["traffic_sections"][0]["road_names"] == ["Current Second Road"]
+    assert body["travel_duration_minutes"] == 55
+    assert body["calculated_departure_time"] == "2026-10-10T23:05:00Z"
+    assert body["weather_estimate"]["origin_forecast_at"] == "2026-10-10T23:00:00Z"
     app.dependency_overrides.pop(get_routing_service, None)
     app.dependency_overrides.pop(get_weather_service, None)
 

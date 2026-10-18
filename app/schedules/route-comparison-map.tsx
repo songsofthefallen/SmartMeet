@@ -30,6 +30,7 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
   const [isDragging, setIsDragging] = useState(false);
   const drag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const selectedRoute = routes.find((route) => route.route_id === selectedRouteId) ?? routes[0];
+  const activeRouteId = selectedRoute?.route_id ?? null;
   const visibleRoutes = useMemo(() => mode === "view" && selectedRoute ? [selectedRoute] : routes, [mode, routes, selectedRoute]);
   const selectedPoints = useMemo(() => selectedRoute?.geometry ?? [], [selectedRoute]);
   const landmarkKey = selectedRoute ? `${selectedRoute.route_id}:${JSON.stringify(selectedPoints)}` : "";
@@ -105,7 +106,7 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
     return `${((x - map.minX) / (map.maxX - map.minX)) * IMAGE_WIDTH},${((map.maxY - y) / (map.maxY - map.minY)) * IMAGE_HEIGHT}`;
   };
   const validRoutes = visibleRoutes.map((route) => ({ route, index: routes.indexOf(route), points: route.geometry ?? [] })).filter(({ points }) => points.length > 1);
-  const drawOrder = [...validRoutes].sort(({ route: left }, { route: right }) => Number(left.route_id === selectedRouteId) - Number(right.route_id === selectedRouteId));
+  const drawOrder = [...validRoutes].sort(({ route: left }, { route: right }) => Number(left.route_id === activeRouteId) - Number(right.route_id === activeRouteId));
   const firstRoutePoints = selectedRoute?.geometry ?? validRoutes[0]?.points ?? [];
   const startPoint = origin ? { latitude: origin.latitude, longitude: origin.longitude } : firstRoutePoints[0];
   const endPoint = destination ? { latitude: destination.latitude, longitude: destination.longitude } : firstRoutePoints.at(-1);
@@ -121,7 +122,7 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
       {!imageUrl && <div className="absolute inset-0 grid place-items-center px-4 text-center text-sm text-[var(--text-secondary)]">{mapUnavailable ? "Detailed map unavailable; route comparisons remain available below." : "Loading detailed road map…"}</div>}
       {imageUrl && <svg viewBox={`0 0 ${IMAGE_WIDTH} ${IMAGE_HEIGHT}`} role="img" aria-label={mode === "view" ? "Saved selected driving route" : "Colored route lines show where the driving options differ"} className="absolute inset-0 h-full w-full">
         {drawOrder.map(({ route, index, points }) => {
-          const selected = selectedRouteId === route.route_id;
+          const selected = activeRouteId === route.route_id;
           const line = points.map(toPoint).join(" ");
           return <g key={route.route_id} opacity={selected ? 1 : 0.3}>
             <polyline points={line} fill="none" stroke="white" strokeWidth={selected ? 14 : 8} strokeLinecap="round" strokeLinejoin="round"/>
@@ -137,7 +138,7 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
       <span className="absolute bottom-2 right-2 rounded-md bg-[var(--surface)]/95 px-2 py-1 text-xs font-medium text-[var(--text-primary)] shadow">B · {destination?.name ?? "Destination"}</span>
     </div>
     <figcaption className="flex flex-wrap gap-x-4 gap-y-2 border-t border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-      {visibleRoutes.map((route) => { const index = routes.indexOf(route); return <span key={route.route_id} className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ROUTE_COLORS[index % ROUTE_COLORS.length] }}/>Route {index + 1}{selectedRouteId === route.route_id ? " · Selected" : ""}</span>; })}
+      {visibleRoutes.map((route) => { const index = routes.indexOf(route); return <span key={route.route_id} className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ROUTE_COLORS[index % ROUTE_COLORS.length] }}/>{mode === "view" ? "Saved selected route" : `Route ${index + 1}${activeRouteId === route.route_id ? " · Selected" : ""}`}</span>; })}
       <span className="inline-flex items-center gap-1.5"><span className="font-bold text-[var(--state-error)]">+</span>Hospital <span className="ml-2 font-bold text-[#7C3AED]">S</span>School</span>
       {landmarkResult?.key === landmarkKey && landmarkResult.failed && <span className="basis-full">Landmarks could not be loaded for this route.</span>}
       {landmarkResult?.key === landmarkKey && !landmarkResult.failed && landmarks.length === 0 && <span className="basis-full">No hospitals or schools were found near this route.</span>}
