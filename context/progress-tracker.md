@@ -1,5 +1,51 @@
 ## Current Progress
 
+### Spec 16 follow-up - Fix TomTom map preview 502
+
+- Reproduced the map proxy failure against TomTom using the exact geographic bounds from the user's request (without printing the configured API key). TomTom returned a generic plain-text HTTP 400 `Bad request`; the FastAPI route translated that upstream rejection into its own HTTP 502. The TomTom body did not identify a rejected parameter.
+- Corrected the Static Image request to use the documented `center` plus a viewport-fit `zoom`, computed from the map's 960×420 dimensions and Mercator-projected bounds. A live TomTom request for those same bounds now returned `image/png` (146,335 bytes).
+- Hardened diagnostics: server logs record only failure category, upstream HTTP status, structured provider code, and validated parameter target names; no key, URL, response body, or coordinates are logged. The endpoint maps invalid/restricted credentials to actionable configuration guidance, provider throttling to 429, timeouts to 504, and other upstream failures to a safe 502.
+- Added regression tests for center/zoom generation and upstream status mappings. No schema or migration change.
+- Verification: live TomTom request succeeded; backend pytest **275 passed**; frontend tests passed; ESLint, TypeScript, production build, and `git diff --check` passed. Browser UI confirmation remains outstanding.
+
+### Spec 16 follow-up - Add labeled map to route comparison
+
+- Implemented: the pre-save route chooser and saved schedule route comparison now display all route geometries over one TomTom Static Image road map. Distinct route colors, shared start/destination markers, route legend, and TomTom attribution make geographic differences easier to compare. The existing route cards retain travel time, distance, traffic delay, and provider road labels.
+- Map requests use an authenticated FastAPI proxy with bounded geographic bounds, fixed image dimensions, a derived zoom level, an eight-second timeout, response content/size validation, and safe failure behavior. The TomTom key remains backend-only. Missing map imagery leaves route selection and details available. No new dependency, schema change, or migration.
+- Changed files: `backend/map_service.py`, `backend/routers/schedules.py`, `backend/tests/test_map_service.py`, `backend/tests/test_schedule_api.py`, `app/schedules/route-comparison-map.tsx`, `app/schedules/schedule-workspace.tsx`, `lib/schedule-api.ts`, `context/decisions.md`, and this tracker.
+- Verification: backend pytest **268 passed**; `npm run test:frontend`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed (Git emitted expected line-ending notices). No live TomTom image request or interactive browser verification has been performed.
+- Remaining manual verification: with a configured TomTom key, inspect map label coverage and route alignment on create and saved schedule screens, confirm mobile sizing, and verify the graceful map-unavailable state. No migration required.
+
+### Spec 16 follow-up - Fix 502 for the full alternative-route set
+
+- Root cause: the routing adapter correctly collected up to six entries (primary plus five alternatives), but `TravelEstimate.alternatives` allowed only five. When TomTom returned all six, Pydantic rejected the estimate and the route-options endpoint translated that validation failure into a generic 502.
+- Fixed the schema capacity at six and added a regression test for the full provider-supported set. The request parameter remains `maxAlternatives=5`.
+- Verification: backend pytest **263 passed**; `git diff --check` passed (with existing LF-to-CRLF normalization notices). No live TomTom request performed, so the user's exact provider response was not captured; the six-route validation failure is reproduced and fixed by the regression test.
+
+### Spec 16 follow-up - Choose routes before saving
+
+- Implemented: a confirmed origin and destination in a new schedule triggers an authenticated route-options preview using the selected target time and intent. Routes appear in the form with duration, distance, traffic delay, and road labels; selection is required before saving or assistant autosave. On provider failure, the form displays the safe failure reason, allows retry, and offers an explicit save-without-route option.
+- Implemented: the create request includes the selected provider route ID; the backend re-requests and validates current options, then applies only the matching route to the persisted estimate and calculations. A changed option list returns a clear conflict rather than silently selecting a different route.
+- Added route-preview/create integration coverage. Changed files: `backend/schemas.py`, `backend/routers/schedules.py`, `backend/tests/test_routing.py`, `lib/schedule-api.ts`, `app/schedules/schedule-workspace.tsx`, `context/decisions.md`, and this tracker.
+- Tradeoff: Preview and create each request TomTom to avoid trusting route data supplied by the browser or adding database-backed temporary state.
+- Verification: backend pytest **262 passed**; frontend test suite passed; ESLint, TypeScript, production build, and `git diff --check` passed. No live TomTom or browser workflow performed.
+
+### Spec 16 follow-up - Show route status and expose route selection
+
+- Fixed: confirmed origin/destination schedules now show the Travel and traffic card even when route lookup failed. It explains that estimates are unavailable and exposes a `Get route estimate` retry action; successful lookups continue to show saved duration and traffic details.
+- Fixed: route choices are shown whenever TomTom returned at least one route, making the selected route visible even when the provider offers no alternatives. Existing location-free and past-schedule behavior remains intact.
+- Changed files: `app/schedules/schedule-workspace.tsx`, `lib/schedule-warning-display.js`, `lib/schedule-warning-display.test.js`, `context/decisions.md`, and this tracker.
+- Verification: backend pytest **261 passed**; frontend tests passed; ESLint (no warnings), TypeScript, production build, and `git diff --check` passed. No live provider or browser reproduction performed.
+
+### Spec 16 - Alternative Route Selection
+
+- Implemented: TomTom requests `maxAlternatives=5`, validates each returned route independently, and retains up to six valid driving routes (primary plus five alternatives). Each option carries duration, optional distance and traffic metrics, traffic sections, provider road names, and up to 500 validated route points for an SVG path preview. Invalid alternatives are skipped; invalid/no routes use the existing graceful provider-failure behavior.
+- Implemented: schedule detail displays selectable route comparisons and marks the saved selection. Authenticated selection updates the selected estimate, traffic sections, duration, dependent schedule calculations, and weather assessment in one backend update. Selection and route options live in the existing estimate JSON; old schedules without route options remain compatible. No migration.
+- Changed files: `backend/routing_service.py`, `backend/schemas.py`, `backend/routers/schedules.py`, `backend/tests/test_routing.py`, `backend/tests/test_schedules.py`, `lib/schedule-api.ts`, `app/schedules/schedule-workspace.tsx`, `context/decisions.md`, and this tracker.
+- Database inspection: configured MySQL database reports Alembic revision `20261016_0009` (head). Existing `schedules.travel_estimate` is the route JSON storage field in the ORM and existing migration history; no new column was needed and no migration was applied.
+- Verification: backend pytest **261 passed**; the routing suite was rerun after the added geometry assertion (**55 passed**). Frontend test suite passed; `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed. Git emitted expected LF-to-CRLF normalization notices. No live TomTom request or interactive browser workflow performed.
+- Remaining manual verification: compare route path previews in the browser using configured TomTom credentials, choose a route, verify traffic incidents and weather forecast hours update, then verify saved choice after reload. Verify no-alternative/provider-failure states with live provider conditions if available.
+
 ### Spec 15 - AI origin/destination extraction and location resolution
 
 - Implemented: extraction now returns validated nullable origin/destination descriptions separately from the existing schedule fields. The frontend searches each stated description through the existing authenticated backend TomTom Search API and presents the returned candidates through the existing `LocationPicker`; it never selects a candidate automatically. Place-aware autosave waits until each extracted description has a selected candidate. User edits to a location query clear its prior selection; unrelated schedule edits retain selections in the existing schedule request and JSON fields.

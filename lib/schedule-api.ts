@@ -34,6 +34,7 @@ export type TrafficSectionEstimate = {
   start_coordinates: { latitude: number; longitude: number } | null;
   end_coordinates: { latitude: number; longitude: number } | null;
 };
+export type RouteAlternativeEstimate = { route_id: string; duration_seconds: number; duration_minutes: number; distance_meters: number | null; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: TrafficSectionEstimate[]; road_names: string[]; geometry?: { latitude: number; longitude: number }[] };
 
 export type Schedule = {
   id: number;
@@ -42,7 +43,7 @@ export type Schedule = {
   description: string | null;
   location: LocationSelection | null;
   origin_location: LocationSelection | null;
-  travel_estimate: { duration_seconds: number; duration_minutes: number; provider: string; retrieved_at: string; traffic_included: boolean; route_time_basis: "current" | "scheduled_departure" | "scheduled_arrival"; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: TrafficSectionEstimate[] } | null;
+  travel_estimate: { duration_seconds: number; duration_minutes: number; provider: string; retrieved_at: string; traffic_included: boolean; route_time_basis: "current" | "scheduled_departure" | "scheduled_arrival"; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: TrafficSectionEstimate[]; selected_route_id?: string; alternatives?: RouteAlternativeEstimate[] } | null;
   weather_estimate: { status: "available" | "unavailable"; summary: string; retrieved_at: string | null; forecast_at: string | null; origin_forecast_at?: string | null; destination_forecast_at?: string | null; origin_weather?: WeatherPointForecast | null; destination_weather?: WeatherPointForecast | null; conditions: string[]; advisories: WeatherAdvisory[] } | null;
   traffic_delay_minutes: number | null;
   traffic_status: "little_or_no_delay" | "some_delay" | "significant_delay" | "unavailable";
@@ -75,8 +76,9 @@ export type ScheduleInput = {
   preparation_duration_minutes: number | null;
   travel_duration_minutes: number | null;
   idempotency_key?: string | null;
+  selected_route_id?: string;
 };
-export type ScheduleUpdateInput = Partial<ScheduleInput>;
+export type ScheduleUpdateInput = Partial<ScheduleInput> & { selected_route_id?: string };
 
 export type ScheduleExtraction = {
   is_schedule_request: boolean;
@@ -135,7 +137,7 @@ function isSchedule(value: unknown): value is Schedule {
     (typeof value.description === "string" || value.description === null) &&
     (value.location === null || isLocation(value.location)) &&
     ((value.origin_location ?? null) === null || isLocation(value.origin_location)) &&
-    ((value.travel_estimate ?? null) === null || (isRecord(value.travel_estimate) && typeof value.travel_estimate.duration_seconds === "number" && typeof value.travel_estimate.duration_minutes === "number" && typeof value.travel_estimate.provider === "string" && typeof value.travel_estimate.retrieved_at === "string" && typeof value.travel_estimate.traffic_included === "boolean" && ["current", "scheduled_departure", "scheduled_arrival"].includes(value.travel_estimate.route_time_basis as string) && (typeof value.travel_estimate.traffic_delay_seconds === "number" || value.travel_estimate.traffic_delay_seconds === null) && (typeof value.travel_estimate.no_traffic_travel_time_seconds === "number" || value.travel_estimate.no_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.historic_traffic_travel_time_seconds === "number" || value.travel_estimate.historic_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.live_traffic_incidents_travel_time_seconds === "number" || value.travel_estimate.live_traffic_incidents_travel_time_seconds === null) && Array.isArray(value.travel_estimate.traffic_sections) && value.travel_estimate.traffic_sections.every(isTrafficSectionEstimate))) &&
+    ((value.travel_estimate ?? null) === null || (isRecord(value.travel_estimate) && typeof value.travel_estimate.duration_seconds === "number" && typeof value.travel_estimate.duration_minutes === "number" && typeof value.travel_estimate.provider === "string" && typeof value.travel_estimate.retrieved_at === "string" && typeof value.travel_estimate.traffic_included === "boolean" && ["current", "scheduled_departure", "scheduled_arrival"].includes(value.travel_estimate.route_time_basis as string) && (typeof value.travel_estimate.traffic_delay_seconds === "number" || value.travel_estimate.traffic_delay_seconds === null) && (typeof value.travel_estimate.no_traffic_travel_time_seconds === "number" || value.travel_estimate.no_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.historic_traffic_travel_time_seconds === "number" || value.travel_estimate.historic_traffic_travel_time_seconds === null) && (typeof value.travel_estimate.live_traffic_incidents_travel_time_seconds === "number" || value.travel_estimate.live_traffic_incidents_travel_time_seconds === null) && Array.isArray(value.travel_estimate.traffic_sections) && value.travel_estimate.traffic_sections.every(isTrafficSectionEstimate) && (value.travel_estimate.alternatives === undefined || (Array.isArray(value.travel_estimate.alternatives) && value.travel_estimate.alternatives.every((option) => isRecord(option) && typeof option.route_id === "string" && typeof option.duration_seconds === "number" && typeof option.duration_minutes === "number" && (typeof option.distance_meters === "number" || option.distance_meters === null) && Array.isArray(option.traffic_sections) && option.traffic_sections.every(isTrafficSectionEstimate) && Array.isArray(option.road_names)))))) &&
     ((value.weather_estimate ?? null) === null || (isRecord(value.weather_estimate) && ["available", "unavailable"].includes(value.weather_estimate.status as string) && typeof value.weather_estimate.summary === "string" && (typeof value.weather_estimate.retrieved_at === "string" || value.weather_estimate.retrieved_at === null) && (typeof value.weather_estimate.forecast_at === "string" || value.weather_estimate.forecast_at === null) && (value.weather_estimate.origin_forecast_at === undefined || typeof value.weather_estimate.origin_forecast_at === "string" || value.weather_estimate.origin_forecast_at === null) && (value.weather_estimate.destination_forecast_at === undefined || typeof value.weather_estimate.destination_forecast_at === "string" || value.weather_estimate.destination_forecast_at === null) && (value.weather_estimate.origin_weather === undefined || value.weather_estimate.origin_weather === null || isWeatherPointForecast(value.weather_estimate.origin_weather)) && (value.weather_estimate.destination_weather === undefined || value.weather_estimate.destination_weather === null || isWeatherPointForecast(value.weather_estimate.destination_weather)) && Array.isArray(value.weather_estimate.conditions) && Array.isArray(value.weather_estimate.advisories) && value.weather_estimate.advisories.every((item) => isRecord(item) && typeof item.condition === "string" && (item.endpoint === "origin" || item.endpoint === "destination") && typeof item.forecast_at === "string"))) &&
     ((typeof value.traffic_delay_minutes === "number" || value.traffic_delay_minutes === null) && ["little_or_no_delay", "some_delay", "significant_delay", "unavailable"].includes(value.traffic_status as string) && ["live_available", "historical_available", "live_and_historical_available", "unknown"].includes(value.traffic_data_source as string)) &&
     (value.time_intent === "arrival" || value.time_intent === "departure") &&
@@ -292,6 +294,9 @@ async function request<T>(
     if (response.status === 504 && isRecord(payload) && typeof payload.detail === "string") {
       throw new ScheduleApiError(payload.detail, 504);
     }
+    if (response.status >= 500 && isRecord(payload) && typeof payload.detail === "string") {
+      throw new ScheduleApiError(payload.detail, response.status);
+    }
     if (response.status >= 500) throw new ScheduleApiError("The schedule service could not complete that request. Try again later.", response.status);
     throw new ScheduleApiError("The schedule request was rejected. Check the details and try again.", response.status);
   }
@@ -306,7 +311,37 @@ function isScheduleList(value: unknown): value is Schedule[] {
   return Array.isArray(value) && value.every(isSchedule);
 }
 
+function isRouteOptions(value: unknown): value is { alternatives: RouteAlternativeEstimate[] } {
+  if (!isRecord(value) || !Array.isArray(value.alternatives) || value.alternatives.length === 0) return false;
+  return value.alternatives.every((option) => isRecord(option) &&
+    typeof option.route_id === "string" &&
+    typeof option.duration_seconds === "number" &&
+    typeof option.duration_minutes === "number" &&
+    (typeof option.distance_meters === "number" || option.distance_meters === null) &&
+    Array.isArray(option.traffic_sections) && option.traffic_sections.every(isTrafficSectionEstimate) &&
+    Array.isArray(option.road_names) &&
+    (option.geometry === undefined || (Array.isArray(option.geometry) && option.geometry.every((point) => isRecord(point) && typeof point.latitude === "number" && typeof point.longitude === "number"))));
+}
+
 export const scheduleApi = {
+  async routeMap(bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number }, token: string | null): Promise<Blob> {
+    const query = new URLSearchParams(Object.entries(bounds).map(([key, value]) => [key, String(value)]));
+    let response: Response;
+    try {
+      response = await fetch(`${apiBaseUrl}/schedules/route-map?${query}`, {
+        headers: { Accept: "image/png", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+    } catch {
+      throw new ScheduleApiError("Map preview could not be loaded. Route details are still available.", null);
+    }
+    if (!response.ok) {
+      throw new ScheduleApiError("Map preview could not be loaded. Route details are still available.", response.status);
+    }
+    return response.blob();
+  },
+  routeOptions(input: Pick<ScheduleInput, "origin_location" | "location" | "time_intent" | "target_datetime">, token: string | null) {
+    return request<{ alternatives: RouteAlternativeEstimate[] }>("/schedules/route-options", token, "POST", input, isRouteOptions);
+  },
   searchLocations(query: string, token: string | null) {
     return request<{ results: LocationSelection[] }>("/locations/search", token, "POST", { query }, isLocationSearch);
   },

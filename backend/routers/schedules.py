@@ -2,10 +2,12 @@
 
 import json
 import logging
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -14,8 +16,9 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from main import verify_clerk_token
+from map_service import MapProviderError, TomTomMapService
 from models import RouteRefreshAttempt, Schedule, ScheduleNameCounter, ScheduleStatus
-from schemas import LocationSelection, ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate, WeatherAssessmentDiagnostic, WeatherEstimate
+from schemas import LocationSelection, RouteOptionsRequest, ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate, WeatherAssessmentDiagnostic, WeatherEstimate
 from routing_service import RoutingProviderConfigurationError, RoutingProviderError, TomTomRoutingService
 from time_calculation import CalculationSettings, calculate_schedule_times, recalculate_schedule
 from route_refresh_limits import RouteRefreshRateLimited, finish_attempt, reserve_attempt
@@ -36,6 +39,47 @@ def get_routing_service() -> TomTomRoutingService | None:
 
 
 RoutingService = Annotated[TomTomRoutingService | None, Depends(get_routing_service)]
+
+
+def get_map_service() -> TomTomMapService | None:
+    try:
+        return TomTomMapService()
+    except MapProviderError:
+        return None
+
+
+MapService = Annotated[TomTomMapService | None, Depends(get_map_service)]
+
+
+@router.get("/route-map")
+def get_route_map(
+    user_id: CurrentUser,
+    maps: MapService,
+    min_lon: Annotated[float, Query(ge=-180, le=180)],
+    min_lat: Annotated[float, Query(ge=-85, le=85)],
+    max_lon: Annotated[float, Query(ge=-180, le=180)],
+    max_lat: Annotated[float, Query(ge=-85, le=85)],
+) -> Response:
+    del user_id
+    if maps is None:
+        raise HTTPException(status_code=503, detail="Map preview is not configured.")
+    if min_lon >= max_lon or min_lat >= max_lat or max_lon - min_lon > 30 or max_lat - min_lat > 20:
+        raise HTTPException(status_code=422, detail="Map preview bounds are invalid.")
+    try:
+        image, content_type = maps.static_image((min_lon, min_lat, max_lon, max_lat))
+    except MapProviderError as exc:
+        logger.warning(
+            "TomTom map image request failed reason=%s provider_status=%s provider_code=%s provider_targets=%s",
+            exc.reason, exc.provider_status, exc.provider_error_code, exc.provider_error_targets,
+        )
+        if exc.reason == "credentials":
+            raise HTTPException(status_code=503, detail="TomTom Maps access is unavailable for the configured API key. Enable the Maps Static Image API for this key.") from exc
+        if exc.reason == "rate_limit":
+            raise HTTPException(status_code=429, detail="TomTom map image limit reached. Try again later.") from exc
+        if exc.reason == "timeout":
+            raise HTTPException(status_code=504, detail="TomTom map image request timed out. Route details are still available.") from exc
+        raise HTTPException(status_code=502, detail="Map preview is temporarily unavailable.") from exc
+    return Response(content=image, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
 
 
 def _refresh_route(schedule: Schedule, service: TomTomRoutingService | None) -> None:
@@ -100,6 +144,48 @@ def _route_estimate(
         **diagnostic_args,
         **route_time_args,
     )
+
+
+def _select_route(estimate: TravelEstimate, route_id: str) -> TravelEstimate:
+    option = next((item for item in estimate.alternatives if item.route_id == route_id), None)
+    if option is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "route_options_changed", "message": "The route options changed before saving. Reload the routes and choose again."},
+        )
+    return estimate.model_copy(update={
+        "duration_seconds": option.duration_seconds,
+        "duration_minutes": option.duration_minutes,
+        "traffic_delay_seconds": option.traffic_delay_seconds,
+        "no_traffic_travel_time_seconds": option.no_traffic_travel_time_seconds,
+        "historic_traffic_travel_time_seconds": option.historic_traffic_travel_time_seconds,
+        "live_traffic_incidents_travel_time_seconds": option.live_traffic_incidents_travel_time_seconds,
+        "traffic_sections": option.traffic_sections,
+        "selected_route_id": option.route_id,
+    }, deep=True)
+
+
+@router.post("/route-options", response_model=TravelEstimate)
+def get_route_options(payload: RouteOptionsRequest, user_id: CurrentUser, routing: RoutingService) -> TravelEstimate:
+    del user_id  # The dependency enforces authentication; routes are not persisted here.
+    if routing is None:
+        raise HTTPException(status_code=503, detail="Routing is not configured. Check the server routing credentials.")
+    route_context = SimpleNamespace(
+        origin_location=payload.origin_location.model_dump(),
+        location=payload.location.model_dump(),
+        target_datetime=payload.target_datetime,
+        time_intent=payload.time_intent,
+    )
+    try:
+        return _route_estimate(route_context, routing)
+    except RoutingProviderError as exc:
+        if exc.reason == "no_route":
+            raise HTTPException(status_code=422, detail={"code": "no_drivable_route", "message": "TomTom could not find a drivable route between these locations. Check the selected places and try again."}) from exc
+        if exc.reason in {"timeout", "compute_limit"}:
+            raise HTTPException(status_code=504, detail="TomTom took too long to calculate these routes. Try again or save without a route estimate.") from exc
+        raise HTTPException(status_code=502, detail="TomTom could not return valid route options. Try again or save without a route estimate.") from exc
+    except (ValueError, RoutingProviderConfigurationError) as exc:
+        raise HTTPException(status_code=422, detail="A future target time and valid route locations are required to find routes.") from exc
 
 
 def _owned_schedule(db: Session, schedule_id: int, user_id: str) -> Schedule:
@@ -299,10 +385,13 @@ def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser
             return _calculate(existing)
     values = payload.model_dump()
     continue_without_route = values.pop("continue_without_route", False)
+    selected_route_id = values.pop("selected_route_id", None)
     requested_title = values.pop("title")
     title = requested_title or _next_schedule_title(db, user_id)
     schedule = Schedule(clerk_user_id=user_id, title=title, normalized_title=_normalized_title(title), **values)
-    if schedule.origin_location is not None and schedule.location is not None and schedule.travel_duration_minutes is None:
+    if schedule.origin_location is not None and schedule.location is not None and (
+        schedule.travel_duration_minutes is None or selected_route_id is not None
+    ):
         if continue_without_route:
             schedule.travel_estimate = None
             schedule.travel_duration_minutes = None
@@ -325,12 +414,22 @@ def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser
                             ),
                         },
                     ) from exc
+                if selected_route_id is not None:
+                    db.rollback()
+                    provider_status = 504 if exc.reason in {"timeout", "compute_limit"} else 502
+                    message = "TomTom could not confirm your selected route. Refresh the route options and choose again; the schedule was not saved."
+                    raise HTTPException(status_code=provider_status, detail=message) from exc
                 schedule.travel_estimate = None
                 schedule.travel_duration_minutes = None
-            except (ValueError, RoutingProviderConfigurationError):
+            except (ValueError, RoutingProviderConfigurationError) as exc:
+                if selected_route_id is not None:
+                    db.rollback()
+                    raise HTTPException(status_code=503, detail="TomTom could not confirm your selected route. Check routing availability and try again; the schedule was not saved.") from exc
                 schedule.travel_estimate = None
                 schedule.travel_duration_minutes = None
             else:
+                if selected_route_id is not None:
+                    estimate = _select_route(estimate, selected_route_id)
                 schedule.travel_estimate = estimate.model_dump(mode="json")
                 schedule.travel_duration_minutes = estimate.duration_minutes
     _refresh_weather(schedule, weather)
@@ -397,7 +496,25 @@ def update_schedule(
         schedule = _owned_schedule(db, schedule_id, user_id)
         old_origin = schedule.origin_location
         old_destination = schedule.location
-        for field, value in payload.model_dump(exclude_unset=True).items():
+        changes = payload.model_dump(exclude_unset=True)
+        selected_route_id = changes.pop("selected_route_id", None)
+        if selected_route_id is not None:
+            try:
+                estimate = TravelEstimate.model_validate(schedule.travel_estimate)
+                option = next(item for item in estimate.alternatives if item.route_id == selected_route_id)
+            except (ValidationError, StopIteration, TypeError):
+                raise HTTPException(status_code=422, detail="That route is no longer available. Refresh the route estimate.")
+            estimate.duration_seconds = option.duration_seconds
+            estimate.duration_minutes = option.duration_minutes
+            estimate.traffic_delay_seconds = option.traffic_delay_seconds
+            estimate.no_traffic_travel_time_seconds = option.no_traffic_travel_time_seconds
+            estimate.historic_traffic_travel_time_seconds = option.historic_traffic_travel_time_seconds
+            estimate.live_traffic_incidents_travel_time_seconds = option.live_traffic_incidents_travel_time_seconds
+            estimate.traffic_sections = option.traffic_sections
+            estimate.selected_route_id = option.route_id
+            schedule.travel_estimate = estimate.model_dump(mode="json")
+            schedule.travel_duration_minutes = option.duration_minutes
+        for field, value in changes.items():
             setattr(schedule, field, value)
         if "title" in payload.model_fields_set:
             schedule.normalized_title = _normalized_title(schedule.title)
@@ -416,7 +533,7 @@ def update_schedule(
             # An explicit duration edit is a manual value, so old provider metadata
             # must not be presented as if it described that value.
             schedule.travel_estimate = None
-        if route_inputs_changed or duration_cleared or "travel_duration_minutes" in payload.model_fields_set or target_changed:
+        if route_inputs_changed or duration_cleared or "travel_duration_minutes" in payload.model_fields_set or target_changed or selected_route_id is not None:
             _refresh_weather(schedule, weather)
         _calculate(schedule)
         _commit(db)

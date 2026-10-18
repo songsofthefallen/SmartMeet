@@ -2,7 +2,7 @@
 
 import { useAuth, UserButton } from "@clerk/nextjs";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { scheduleApi, ScheduleApiError, type LocationSelection, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent, type ScheduleUpdateInput, type TrafficSectionEstimate } from "@/lib/schedule-api";
+import { scheduleApi, ScheduleApiError, type LocationSelection, type RouteAlternativeEstimate, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent, type ScheduleUpdateInput, type TrafficSectionEstimate } from "@/lib/schedule-api";
 import { clarificationQuestions } from "@/lib/clarification-messages";
 import { localDateTimeFromExtraction, localTimeInputFromExtraction } from "@/lib/schedule-extraction-time";
 import { isAssistantAutosaveEligible } from "@/lib/assistant-autosave";
@@ -11,6 +11,7 @@ import { arrivalPreparationNote, suggestedTimeRows } from "@/lib/suggested-times
 import { upsertScheduleNewestFirst } from "@/lib/schedule-order.js";
 import { shouldInvalidateLocationSelection } from "@/lib/location-selection.js";
 import { historicalEstimateNotice, PAST_SCHEDULE_BANNER_TITLE, showPastScheduleNotices, showPostDepartureRouteWarning, showStaleEstimateWarning, showTravelTrafficCard } from "@/lib/schedule-warning-display.js";
+import { RouteComparisonMap } from "./route-comparison-map";
 
 type FormValues = Omit<ScheduleInput, "target_datetime" | "time_intent" | "preparation_duration_minutes" | "title"> & { title: string; target_datetime: string; time_intent: ScheduleIntent | ""; preparation_duration_minutes: number | null };
 type Notice = { kind: "success" | "error" | "info"; text: string };
@@ -145,6 +146,12 @@ export default function ScheduleWorkspace() {
   const [originQuery, setOriginQuery] = useState("");
   const [originResults, setOriginResults] = useState<LocationSelection[]>([]);
   const [originSearching, setOriginSearching] = useState(false);
+  const [routeOptions, setRouteOptions] = useState<RouteAlternativeEstimate[] | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [routeOptionsLoading, setRouteOptionsLoading] = useState(false);
+  const [routeOptionsError, setRouteOptionsError] = useState<string | null>(null);
+  const [routeSearchVersion, setRouteSearchVersion] = useState(0);
+  const routeOptionsGeneration = useRef(0);
 
   const activeSchedules = useMemo(
     () => schedules.filter((item) => item.status === "active"),
@@ -187,6 +194,57 @@ export default function ScheduleWorkspace() {
     const timer = window.setInterval(updateClock, 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (view !== "form" || editingId !== null || !form.origin_location || !form.location) {
+      setRouteOptions(null);
+      setSelectedRouteId(null);
+      setRouteOptionsLoading(false);
+      setRouteOptionsError(null);
+      return;
+    }
+    if (!form.target_datetime || !form.time_intent) {
+      setRouteOptions(null);
+      setSelectedRouteId(null);
+      setRouteOptionsLoading(false);
+      setRouteOptionsError(null);
+      return;
+    }
+    let targetDatetime: string;
+    try {
+      targetDatetime = toOffsetDateTime(form.target_datetime, form.timezone.trim());
+    } catch {
+      setRouteOptions(null);
+      setSelectedRouteId(null);
+      setRouteOptionsLoading(false);
+      return;
+    }
+    const generation = ++routeOptionsGeneration.current;
+    const timer = window.setTimeout(() => {
+      setRouteOptions(null);
+      setSelectedRouteId(null);
+      setRouteOptionsLoading(true);
+      setRouteOptionsError(null);
+      void getToken().then((token) => scheduleApi.routeOptions({
+        origin_location: form.origin_location!,
+        location: form.location!,
+        time_intent: form.time_intent as ScheduleIntent,
+        target_datetime: targetDatetime,
+      }, token)).then((result) => {
+        if (generation !== routeOptionsGeneration.current) return;
+        setRouteOptions(result.alternatives);
+      }).catch((error: unknown) => {
+        if (generation !== routeOptionsGeneration.current) return;
+        setRouteOptionsError(messageFor(error));
+      }).finally(() => {
+        if (generation === routeOptionsGeneration.current) setRouteOptionsLoading(false);
+      });
+    }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      routeOptionsGeneration.current += 1;
+    };
+  }, [view, editingId, form.origin_location, form.location, form.target_datetime, form.time_intent, form.timezone, getToken, routeSearchVersion]);
 
   function openCreate() {
     setEditingId(null);
@@ -360,12 +418,16 @@ export default function ScheduleWorkspace() {
     if (!valid) return;
     try {
       toOffsetDateTime(form.target_datetime, form.timezone.trim());
+      if (form.origin_location && form.location && (
+        routeOptionsLoading || routeOptions === null || routeOptionsError !== null ||
+        routeOptions.length === 0 || selectedRouteId === null
+      )) return;
       autoSavePending.current = false;
       scheduleForm.current?.requestSubmit();
     } catch {
       // Keep the candidate in the form until the user resolves the invalid local time.
     }
-  }, [form, extractionReview, editingId, timezoneConflictConfirmed]);
+  }, [form, extractionReview, editingId, timezoneConflictConfirmed, routeOptionsLoading, routeOptions, routeOptionsError, selectedRouteId]);
 
   function updateExtractionDate(value: string) {
     clearRouteUnavailableConfirmation();
@@ -411,6 +473,20 @@ export default function ScheduleWorkspace() {
     event.preventDefault();
     if (saveInFlight.current || extractionInFlight.current || saving || extracting) return;
     setMessage(null);
+    if (editingId === null && form.origin_location && form.location && !continueWithoutRoute.current) {
+      if (routeOptionsLoading || routeOptions === null) {
+        setMessage({ kind: "info", text: "Loading driving routes. Choose one before saving." });
+        return;
+      }
+      if (routeOptionsError || routeOptions.length === 0) {
+        setMessage({ kind: "error", text: routeOptionsError ?? "No driving routes are available. Retry route search or explicitly save without a route estimate." });
+        return;
+      }
+      if (!selectedRouteId) {
+        setMessage({ kind: "info", text: "Choose a driving route before saving this schedule." });
+        return;
+      }
+    }
     if (extractionReview?.ambiguous_fields.includes("timezone") && !timezoneConflictConfirmed) {
       setMessage({ kind: "error", text: "Confirm which timezone should interpret this local time before saving." });
       return;
@@ -438,6 +514,7 @@ export default function ScheduleWorkspace() {
       timezone: form.timezone.trim(),
       target_datetime: targetDateTime,
       ...(editingId === null && idempotencyKey.current ? { idempotency_key: idempotencyKey.current } : {}),
+      ...(editingId === null && selectedRouteId ? { selected_route_id: selectedRouteId } : {}),
     };
     saveInFlight.current = true;
     setSaving(true);
@@ -543,6 +620,23 @@ export default function ScheduleWorkspace() {
     }
   }
 
+  async function selectRoute(schedule: Schedule, routeId: string) {
+    if (!schedule.travel_estimate || schedule.travel_estimate.selected_route_id === routeId || saving) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const token = await getToken();
+      const updated = await scheduleApi.update(schedule.id, { selected_route_id: routeId }, token);
+      setSchedules((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setSelectedSchedule(updated);
+      setMessage({ kind: "success", text: "Preferred route updated. Travel times and weather advisory were recalculated." });
+    } catch (error) {
+      setMessage({ kind: "error", text: messageFor(error) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const selected = selectedId === selectedSchedule?.id ? selectedSchedule : null;
   const originWeatherForecastAt = selected?.weather_estimate?.origin_forecast_at ?? selected?.weather_estimate?.forecast_at ?? null;
   const destinationWeatherForecastAt = selected?.weather_estimate?.destination_forecast_at ?? null;
@@ -608,6 +702,7 @@ export default function ScheduleWorkspace() {
                 </section>}
                 <label className="block text-sm font-medium">Title <span className="font-normal text-[var(--text-muted)]">(optional)</span><input className={fieldClass} maxLength={200} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Team planning meeting" /></label><label className="block text-sm font-medium">Description <span className="font-normal text-[var(--text-muted)]">(optional)</span><textarea className={fieldClass} rows={3} maxLength={4000} value={form.description ?? ""} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Add notes for this schedule" /></label>
                 <div className="grid gap-4 sm:grid-cols-2"><LocationPicker label="Origin" value={form.origin_location} query={originQuery} results={originResults} searching={originSearching} onQuery={(value) => { clearRouteUnavailableConfirmation(); setOriginQuery(value); setOriginResults([]); if (shouldInvalidateLocationSelection(form.origin_location, value)) setForm((current) => ({ ...current, origin_location: null })); }} onSearch={() => void searchOriginLocations()} onSelect={(origin_location) => { clearRouteUnavailableConfirmation(); setForm((current) => ({ ...current, origin_location })); setOriginQuery(origin_location.name); setOriginResults([]); }} onClear={() => { clearRouteUnavailableConfirmation(); setForm((current) => ({ ...current, origin_location: null })); setOriginResults([]); }} /><LocationPicker label="Destination" value={form.location} query={locationQuery} results={locationResults} searching={locationSearching} onQuery={(value) => { clearRouteUnavailableConfirmation(); setLocationQuery(value); setLocationResults([]); if (shouldInvalidateLocationSelection(form.location, value)) setForm((current) => ({ ...current, location: null })); }} onSearch={() => void searchLocations()} onSelect={(location) => { clearRouteUnavailableConfirmation(); setForm((current) => ({ ...current, location })); setLocationQuery(location.name); setLocationResults([]); }} onClear={() => { clearRouteUnavailableConfirmation(); setForm((current) => ({ ...current, location: null })); setLocationResults([]); }} /></div>
+                {form.origin_location && form.location && <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)] p-4" aria-label="Driving route selection"><h3 className="text-sm font-semibold">Choose a driving route before saving</h3>{!form.time_intent || !form.target_datetime ? <p className="mt-1 text-sm text-[var(--text-secondary)]">Set the target date, time, and arrival or departure intent to load traffic-aware routes.</p> : routeOptionsLoading ? <p className="mt-1 text-sm text-[var(--text-secondary)]" role="status">Finding driving routes…</p> : routeOptionsError ? <div className="mt-2 text-sm text-[var(--state-error)]" role="alert"><p>{routeOptionsError}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" className={secondaryButton} onClick={() => { setRouteOptionsError(null); setRouteSearchVersion((value) => value + 1); }}>Retry route search</button><button type="button" className={secondaryButton} onClick={() => { continueWithoutRoute.current = true; scheduleForm.current?.requestSubmit(); }}>Save without route estimate</button></div></div> : routeOptions && routeOptions.length > 0 ? <><RouteComparisonMap routes={routeOptions} selectedRouteId={selectedRouteId}/><div className="mt-3 space-y-2">{routeOptions.map((route, index) => <label key={route.route_id} className="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3"><input type="radio" name="new-schedule-route" checked={selectedRouteId === route.route_id} onChange={() => setSelectedRouteId(route.route_id)} className="mt-1 accent-[var(--brand-primary)]"/><span><span className="font-medium">Route {index + 1}{selectedRouteId === route.route_id ? " · Selected" : ""}</span><span className="mt-1 block text-sm text-[var(--text-secondary)]">{route.duration_minutes} min · {route.distance_meters === null ? "Distance unavailable" : `${(route.distance_meters / 1000).toFixed(1)} km`}{route.traffic_delay_seconds === null ? " · Traffic delay unavailable" : ` · ${Math.ceil(route.traffic_delay_seconds / 60)} min traffic delay`}</span>{route.road_names.length > 0 && <span className="mt-1 block text-xs text-[var(--text-muted)]">Via {route.road_names.join(" · ")}</span>}</span></label>)}</div></> : routeOptions && routeOptions.length === 0 ? <div className="mt-2 text-sm text-[var(--state-error)]"><p>No drivable routes were returned for these locations.</p><button type="button" className={`${secondaryButton} mt-2`} onClick={() => { continueWithoutRoute.current = true; scheduleForm.current?.requestSubmit(); }}>Save without route estimate</button></div> : <p className="mt-1 text-sm text-[var(--text-secondary)]">Routes will load when the schedule time and intent are set.</p>}</section>}
                 {showSplitTargetInputs ? <div className="grid gap-4 sm:grid-cols-2">
                   <label className="block text-sm font-medium">Target date <span className="text-[var(--state-error)]">*</span><input className={fieldClass} type="date" required value={extractionDate} onChange={(event) => updateExtractionDate(event.target.value)} /></label>
                   <label className="block text-sm font-medium">Target local time <span className="text-[var(--state-error)]">*</span><input className={fieldClass} type="time" required value={extractionTime} onChange={(event) => updateExtractionTime(event.target.value)} /></label>
@@ -616,7 +711,7 @@ export default function ScheduleWorkspace() {
                 <div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-medium">Time intent <span className="text-[var(--state-error)]">*</span><select className={fieldClass} required value={form.time_intent} onChange={(e) => { clearRouteUnavailableConfirmation(); setForm({ ...form, time_intent: e.target.value as ScheduleIntent | "" }); }}><option value="" disabled>Select arrival or departure</option><option value="arrival">Arrive by</option><option value="departure">Leave at</option></select></label><label className="block text-sm font-medium">Timezone<select className={fieldClass} required value={form.timezone} onChange={(e) => { clearRouteUnavailableConfirmation(); setForm({ ...form, timezone: e.target.value }); setTimezoneConflictConfirmed(false); }}>{Array.from(new Set([form.timezone, ...supportedTimeZones])).sort().map((timezone) => <option key={timezone} value={timezone}>{timezoneLabel(timezone)}</option>)}</select><span className="mt-1 block text-xs font-normal text-[var(--text-muted)]">The target time is interpreted in this timezone.</span></label></div>
                 <div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-medium">Preparation <span className="font-normal text-[var(--text-muted)]">(optional, minutes)</span><input className={fieldClass} type="number" min="0" step="1" value={form.preparation_duration_minutes ?? ""} onChange={(e) => setForm({ ...form, preparation_duration_minutes: e.target.value === "" ? null : Number(e.target.value) })} /></label><label className="block text-sm font-medium">Travel duration <span className="font-normal text-[var(--text-muted)]">(optional, minutes)</span><input className={fieldClass} type="number" min="0" step="1" value={form.travel_duration_minutes ?? ""} onChange={(e) => setForm({ ...form, travel_duration_minutes: e.target.value === "" ? null : Number(e.target.value) })} /></label></div>
                 {routeUnavailableConfirmation && <div className="mt-4 rounded-xl border border-[var(--state-warning)]/30 bg-[var(--state-warning-bg)] p-4 text-sm text-[var(--state-warning)]" role="alert"><p className="font-semibold">No drivable route found</p><p className="mt-1">TomTom could not find a drivable route between these locations. A traffic estimate will be unavailable, but weather can be assessed separately. Do you want to save anyway?</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" className={primaryButton} disabled={saving} onClick={() => { continueWithoutRoute.current = true; setRouteUnavailableConfirmation(false); scheduleForm.current?.requestSubmit(); }}>Save without route estimate</button><button type="button" className={secondaryButton} onClick={() => { clearRouteUnavailableConfirmation(); }}>Review locations</button></div></div>}
-              </div><div className="mt-6 flex flex-col-reverse gap-3 border-t border-[var(--border)] pt-5 sm:flex-row sm:justify-end"><button type="button" className={secondaryButton} disabled={saving || extracting} onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>Discard</button><button type="submit" className={primaryButton} disabled={saving || extracting}>{saving ? "Saving..." : <><CheckIcon /> {editingId ? "Save changes" : extractionReview?.extraction ? "Save reviewed schedule" : "Add schedule"}</>}</button></div></form> : selected ? <div className="p-5 sm:p-6"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">SCHEDULE DETAILS</p><h2 className="mt-1 text-xl font-bold leading-snug">{selected.title}</h2></div><span className={`rounded-lg px-2.5 py-1 text-xs font-semibold capitalize ${selected.status === "active" ? "bg-[var(--state-success-bg)] text-[var(--state-success)]" : "bg-[var(--surface-secondary)] text-[var(--text-secondary)]"}`}>{selected.status}</span></div>
+              </div><div className="mt-6 flex flex-col-reverse gap-3 border-t border-[var(--border)] pt-5 sm:flex-row sm:justify-end"><button type="button" className={secondaryButton} disabled={saving || extracting} onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>Discard</button><button type="submit" className={primaryButton} disabled={saving || extracting || (editingId === null && Boolean(form.origin_location && form.location) && (!selectedRouteId || routeOptionsLoading))}>{saving ? "Saving..." : <><CheckIcon /> {editingId ? "Save changes" : extractionReview?.extraction ? "Save reviewed schedule" : "Add schedule"}</>}</button></div></form> : selected ? <div className="p-5 sm:p-6"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">SCHEDULE DETAILS</p><h2 className="mt-1 text-xl font-bold leading-snug">{selected.title}</h2></div><span className={`rounded-lg px-2.5 py-1 text-xs font-semibold capitalize ${selected.status === "active" ? "bg-[var(--state-success-bg)] text-[var(--state-success)]" : "bg-[var(--surface-secondary)] text-[var(--text-secondary)]"}`}>{selected.status}</span></div>
               {detailLoading ? <p className="mt-4 text-sm text-[var(--text-muted)]" role="status">Refreshing schedule details...</p> : null}
               {showPastScheduleNotices(selected.is_past) && <div className="mt-4 rounded-xl border border-[var(--state-warning)]/30 bg-[var(--state-warning-bg)] p-3 text-sm text-[var(--state-warning)]" role="status"><p className="font-semibold">{PAST_SCHEDULE_BANNER_TITLE}</p><p className="mt-1">Live traffic and future weather advisories no longer apply to this intended trip. The schedule remains editable and can be cancelled.</p></div>}
               {showPostDepartureRouteWarning(selected.is_past, selected.route_warning) && <div className="mt-4 rounded-xl border border-[var(--state-warning)]/30 bg-[var(--state-warning-bg)] p-3 text-sm text-[var(--state-warning)]" role="status"><p>{selected.route_warning}</p>{selected.travel_estimate && <p className="mt-1 text-xs">Retrieved {formatDate(selected.travel_estimate.retrieved_at, selected.timezone, true)}; intended departure {formatDate(selected.calculated_departure_time ?? selected.target_datetime, selected.timezone, true)}.</p>}</div>}
@@ -624,19 +719,20 @@ export default function ScheduleWorkspace() {
               {(selected.origin_location || selected.location) && <div className="mt-5 grid gap-3 sm:grid-cols-2">{([["Origin", selected.origin_location], ["Destination", selected.location]] as const).map(([label, place]) => <div key={label} className="rounded-xl border border-[var(--border)] p-4"><h3 className="text-sm font-semibold">{label}</h3>{place ? <><p className="mt-1 font-medium">{place.name}</p><p className="text-sm text-[var(--text-secondary)]">{[place.locality, place.region, place.country].filter(Boolean).join(", ")}</p></> : <p className="mt-1 text-sm text-[var(--text-muted)]">Select an origin to calculate a route.</p>}</div>)}</div>}
               <div className="mt-6 rounded-xl bg-[var(--surface-secondary)] p-4"><p className="flex items-center gap-2 text-sm font-medium text-[var(--text-muted)]"><CalendarIcon /> Target {selected.time_intent}</p><p className="mt-2 text-lg font-semibold tabular-nums">{formatDate(selected.target_datetime, selected.timezone)}</p><p className="mt-1 text-sm text-[var(--text-muted)]">{selected.timezone}</p></div>
               <dl className="mt-5 divide-y divide-[var(--border)]"><DetailRow label="Time intent" value={selected.time_intent === "arrival" ? "Arrive by" : "Leave at"} /><DetailRow label="Preparation" value={selected.preparation_duration_minutes === null ? "Not provided" : `${selected.preparation_duration_minutes} minutes`} /><DetailRow label="Travel duration" value={selected.travel_duration_minutes === null ? (selected.origin_location && selected.location ? "Unavailable" : "Select an origin and destination") : `${selected.travel_duration_minutes} minutes`} /><DetailRow label="Description" value={selected.description || "No additional notes"} /></dl>
-              {showTravelTrafficCard(selected.is_past, Boolean(selected.travel_estimate)) && <section className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label="Travel and traffic estimate">
+              {showTravelTrafficCard(selected.is_past, Boolean(selected.travel_estimate), Boolean(selected.origin_location && selected.location)) && <section className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4" aria-label="Travel and traffic estimate">
                 <h3 className="text-sm font-semibold">Travel and traffic</h3>
-                <p className="mt-2 text-2xl font-bold tabular-nums">{selected.travel_duration_minutes === null ? "Travel duration unavailable" : `${selected.travel_duration_minutes} min`}</p>
+                <p className="mt-2 text-2xl font-bold tabular-nums">{selected.travel_duration_minutes === null ? "Route estimate unavailable" : `${selected.travel_duration_minutes} min`}</p>
                 {selected.travel_estimate && <>
+                  {(selected.travel_estimate.alternatives?.length ?? 0) > 0 && <fieldset className="mt-3 rounded-lg border border-[var(--border)] p-3"><legend className="px-1 text-sm font-semibold">Available driving routes</legend><RouteComparisonMap routes={selected.travel_estimate.alternatives!} selectedRouteId={selected.travel_estimate.selected_route_id ?? "0"}/><div className="space-y-2">{selected.travel_estimate.alternatives!.map((route, index) => { const points = route.geometry ?? []; const latitudes = points.map((point) => point.latitude); const longitudes = points.map((point) => point.longitude); const minLat = Math.min(...latitudes); const maxLat = Math.max(...latitudes); const minLon = Math.min(...longitudes); const maxLon = Math.max(...longitudes); const line = points.map((point) => `${8 + ((point.longitude - minLon) / (maxLon - minLon || 1)) * 184},${72 - ((point.latitude - minLat) / (maxLat - minLat || 1)) * 64}`).join(" "); return <label key={route.route_id} className="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--border)] p-3"><input type="radio" name={`route-${selected.id}`} checked={(selected.travel_estimate?.selected_route_id ?? "0") === route.route_id} disabled={saving || selected.is_past} onChange={() => void selectRoute(selected, route.route_id)} className="mt-1 accent-[var(--brand-primary)]"/><span className="min-w-0 flex-1"><span className="font-medium">Route {index + 1}{(selected.travel_estimate?.selected_route_id ?? "0") === route.route_id ? " · Selected" : ""}</span><span className="mt-1 block text-sm text-[var(--text-secondary)]">{route.duration_minutes} min · {route.distance_meters === null ? "Distance unavailable" : `${(route.distance_meters / 1000).toFixed(1)} km`}{route.traffic_delay_seconds === null ? " · Traffic delay unavailable" : ` · ${Math.ceil(route.traffic_delay_seconds / 60)} min traffic delay`}</span>{route.road_names.length > 0 && <span className="mt-1 block text-xs text-[var(--text-muted)]">Via {route.road_names.join(" · ")}</span>}{points.length > 1 && <svg viewBox="0 0 200 80" role="img" aria-label={`Route ${index + 1} driving path preview`} className="mt-2 h-20 w-full rounded-md bg-[var(--surface-secondary)]"><polyline points={line} fill="none" stroke="var(--brand-primary)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/><circle cx={line.split(" ")[0]?.split(",")[0]} cy={line.split(" ")[0]?.split(",")[1]} r="4" fill="var(--state-success)"/><circle cx={line.split(" ").at(-1)?.split(",")[0]} cy={line.split(" ").at(-1)?.split(",")[1]} r="4" fill="var(--state-warning)"/></svg>}</span></label>; })}</div></fieldset>}
                   {showPastScheduleNotices(selected.is_past) && <p className="mt-2 rounded-lg bg-[var(--surface-secondary)] p-3 text-sm text-[var(--text-secondary)]">{historicalEstimateNotice(formatDate(selected.travel_estimate.retrieved_at, selected.timezone, true))}</p>}
                   <p className="mt-1 text-sm font-semibold">{trafficStatusLabel(selected.traffic_status)}</p>
                   {selected.traffic_delay_minutes !== null && <p className="mt-1 text-sm text-[var(--text-secondary)]">Estimated route-level traffic delay: {selected.traffic_delay_minutes} min</p>}
                   <p className="mt-1 text-xs text-[var(--text-muted)]">{routeTimeBasisLabel(selected.travel_estimate.route_time_basis)}. Retrieved {formatDate(selected.travel_estimate.retrieved_at, selected.timezone)}.</p>
                   <div className="mt-3 border-t border-[var(--border)] pt-3"><h4 className="text-sm font-semibold">Traffic along your route</h4>{selected.travel_estimate.traffic_sections.length > 0 ? <><div className="mt-2 space-y-3">{groupTrafficSections(selected.travel_estimate.traffic_sections).map((group: TrafficRoadGroup) => <section key={group.identity} className="rounded-lg border border-[var(--border)] p-3"><div className="flex flex-wrap items-center gap-2"><h5 className="text-sm font-semibold">{group.road_name}</h5>{group.is_approximate_location && <span className="rounded-full border border-[var(--border)] bg-[var(--surface-secondary)] px-2 py-0.5 text-xs text-[var(--text-muted)]">Approximate location</span>}</div>{group.route_designations.length > 0 && <p className="mt-1 text-xs text-[var(--text-muted)]">Route designations: {group.route_designations.join(" · ")}</p>}<p className="mt-2 text-sm text-[var(--text-secondary)]"><span className="font-medium">{group.incident_count} {group.incident_count === 1 ? "incident" : "incidents"}</span> · {group.incident_type_counts.map(({ label, count }) => `${count} ${label.toLocaleLowerCase()}`).join(" · ")}</p><p className="mt-1 text-sm text-[var(--text-secondary)]"><span className="font-medium">Combined reported incident delays:</span> {group.delay_total_complete ? formatTrafficDelay(group.combined_delay_seconds) : `Incomplete (${group.unavailable_delay_count} incident ${group.unavailable_delay_count === 1 ? "delay is" : "delays are"} unavailable${group.known_delay_seconds > 0 ? `; known reports total ${formatTrafficDelay(group.known_delay_seconds)}` : ""})`}</p><details className="mt-2"><summary className="cursor-pointer text-sm font-medium text-[var(--brand-primary)]">Incident details ({group.incident_count})</summary><ul className="mt-2 space-y-2">{group.events.map((section: TrafficSectionEstimate, index: number) => { const details = trafficIncidentDetails(section, group); return details ? <li key={index} className="border-t border-[var(--border)] pt-2 text-sm"><p className="font-medium text-[var(--text-secondary)]">{details.incident_type_label}</p>{details.location_label && <p className="mt-1 text-[var(--text-secondary)]">{details.location_label}</p>}<p className="mt-1 text-[var(--text-secondary)]">Reported incident delay: {details.reported_delay_label}</p></li> : null; })}</ul></details></section>)}</div><p className="mt-2 text-xs text-[var(--text-muted)]">Combined reported incident delays are provider incident figures. They do not represent additional travel time or a breakdown of the route-level traffic delay. Locations marked approximate are nearby reverse-geocoding results and do not confirm the affected road.</p></> : <p className="mt-1 text-sm text-[var(--text-muted)]">TomTom reported no traffic-affected portions for this estimate.</p>}</div>
                 </>}
-                {!selected.travel_estimate && selected.is_past && <p className="mt-1 text-sm text-[var(--text-muted)]">A useful estimate for this past trip is unavailable.</p>}
+                {!selected.travel_estimate && <p className="mt-1 text-sm text-[var(--text-muted)]">{selected.is_past ? "A useful estimate for this past trip is unavailable." : "Traffic and travel time are unavailable until a route estimate is returned."}</p>}
               </section>}
-              {selected.status === "active" && selected.origin_location && selected.location && <div className="mt-3 flex flex-wrap items-center gap-3">{!selected.is_past ? <button type="button" className={secondaryButton} disabled={routeRefreshingId !== null || weatherRefreshingId !== null || (Boolean(selected.travel_estimate) && (routeCooldowns[selected.id] ?? 0) > clockNow)} onClick={() => selected.travel_estimate ? void refreshRouteEstimate(selected) : void refreshWeatherEstimate(selected)}><RefreshIcon />{routeRefreshingId === selected.id ? "Refreshing route..." : weatherRefreshingId === selected.id ? "Refreshing weather..." : selected.travel_estimate ? "Refresh route estimate" : "Refresh weather advisory"}</button> : <span className="text-xs text-[var(--text-muted)]">Refresh unavailable for a past schedule. Edit the departure time to a future time to assess it again.</span>}{!selected.is_past && selected.travel_estimate && (routeCooldowns[selected.id] ?? 0) > clockNow && <span className="text-xs text-[var(--text-muted)]" role="status">Refresh available in {Math.ceil((routeCooldowns[selected.id] - clockNow) / 1000)}s</span>}</div>}
+              {selected.status === "active" && selected.origin_location && selected.location && <div className="mt-3 flex flex-wrap items-center gap-3">{!selected.is_past ? <><button type="button" className={secondaryButton} disabled={routeRefreshingId !== null || weatherRefreshingId !== null || (Boolean(selected.travel_estimate) && (routeCooldowns[selected.id] ?? 0) > clockNow)} onClick={() => void refreshRouteEstimate(selected)}><RefreshIcon />{routeRefreshingId === selected.id ? "Refreshing route..." : weatherRefreshingId === selected.id ? "Refreshing weather..." : selected.travel_estimate ? "Refresh route estimate" : "Get route estimate"}</button>{!selected.travel_estimate && <button type="button" className={secondaryButton} disabled={routeRefreshingId !== null || weatherRefreshingId !== null} onClick={() => void refreshWeatherEstimate(selected)}>{weatherRefreshingId === selected.id ? "Refreshing weather..." : "Refresh weather advisory"}</button>}</> : <span className="text-xs text-[var(--text-muted)]">Refresh unavailable for a past schedule. Edit the departure time to a future time to assess it again.</span>}{!selected.is_past && selected.travel_estimate && (routeCooldowns[selected.id] ?? 0) > clockNow && <span className="text-xs text-[var(--text-muted)]" role="status">Refresh available in {Math.ceil((routeCooldowns[selected.id] - clockNow) / 1000)}s</span>}</div>}
               <section className={`mt-4 rounded-xl border p-4 ${hasWeatherAdvisory ? "border-[var(--state-warning)]/25 bg-[var(--state-warning-bg)]" : "border-[var(--border)] bg-[var(--surface)]"}`} aria-label="Weather advisory">
                 <h3 className="text-sm font-semibold">Weather advisory</h3>
                 {selected.is_past && <p className="mt-2 text-sm text-[var(--text-muted)]">Future weather advisories are no longer applicable to this past trip.</p>}

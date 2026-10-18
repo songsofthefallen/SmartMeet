@@ -12,7 +12,7 @@ import httpx
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
-from schemas import LocationSelection, TrafficCoordinate, TrafficSection, TravelEstimate
+from schemas import LocationSelection, RouteAlternative, TrafficCoordinate, TrafficSection, TravelEstimate
 
 logger = logging.getLogger(__name__)
 TOMTOM_REVERSE_GEOCODE_URL = "https://api.tomtom.com/search/2/reverseGeocode"
@@ -330,6 +330,7 @@ class TomTomRoutingService:
             "computeTravelTimeFor": "all",
             "sectionType": ["traffic", "importantRoadStretch"],
             "routeRepresentation": "polyline",
+            "maxAlternatives": "5",
         }
         if depart_at is not None:
             params["departAt"] = _tomtom_datetime(depart_at)
@@ -362,27 +363,74 @@ class TomTomRoutingService:
             raise RoutingProviderError(reason="no_route")
         try:
             routes = payload["routes"]
-            route = routes[0]
-            summary = route["summary"]
-            seconds = summary["travelTimeInSeconds"]
-            if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not math.isfinite(seconds) or seconds < 0 or seconds > 2_147_483_647 * 60:
+            if not isinstance(routes, list):
                 raise ValueError
+            alternatives: list[RouteAlternative] = []
+            route_payloads: dict[str, dict[str, object]] = {}
+            for index, candidate in enumerate(routes[:6]):
+                if not isinstance(candidate, dict) or not isinstance(candidate.get("summary"), dict):
+                    continue
+                summary = candidate["summary"]
+                seconds = summary.get("travelTimeInSeconds")
+                if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not math.isfinite(seconds) or seconds < 0 or seconds > 2_147_483_647 * 60:
+                    continue
+                distance = summary.get("lengthInMeters")
+                if isinstance(distance, bool) or not isinstance(distance, (int, float)) or distance < 0 or not math.isfinite(distance):
+                    distance = None
+                sections = candidate.get("sections")
+                road_names: list[str] = []
+                if isinstance(sections, list):
+                    for section in sections:
+                        if isinstance(section, dict) and section.get("sectionType") == "IMPORTANT_ROAD_STRETCH":
+                            name = _section_text(section, "streetName")
+                            if name and name not in road_names:
+                                road_names.append(name)
+                legs = candidate.get("legs")
+                raw_points = legs[0].get("points") if isinstance(legs, list) and legs and isinstance(legs[0], dict) else []
+                geometry: list[TrafficCoordinate] = []
+                if isinstance(raw_points, list):
+                    for point in raw_points[:500]:
+                        if isinstance(point, dict):
+                            try:
+                                geometry.append(TrafficCoordinate(latitude=point.get("latitude"), longitude=point.get("longitude")))
+                            except (ValueError, TypeError):
+                                continue
+                route_id = str(index)
+                alternative = RouteAlternative(
+                    route_id=route_id, duration_seconds=int(math.ceil(seconds)),
+                    duration_minutes=int(math.ceil(seconds / 60)),
+                    distance_meters=int(math.ceil(distance)) if distance is not None else None,
+                    traffic_delay_seconds=_optional_seconds(summary, "trafficDelayInSeconds"),
+                    no_traffic_travel_time_seconds=_optional_seconds(summary, "noTrafficTravelTimeInSeconds"),
+                    historic_traffic_travel_time_seconds=_optional_seconds(summary, "historicTrafficTravelTimeInSeconds"),
+                    live_traffic_incidents_travel_time_seconds=_optional_seconds(summary, "liveTrafficIncidentsTravelTimeInSeconds"),
+                    traffic_sections=_traffic_sections(
+                        candidate, diagnose_unnamed=diagnose_unnamed_traffic_sections,
+                        geocode=lambda coordinate: _reverse_geocode_location(coordinate, self.api_key),
+                    ),
+                    road_names=road_names[:10],
+                    geometry=geometry,
+                )
+                alternatives.append(alternative)
+                route_payloads[route_id] = candidate
+            if not alternatives:
+                raise ValueError
+            primary = alternatives[0]
+            route = route_payloads[primary.route_id]
             return TravelEstimate(
-                duration_seconds=int(math.ceil(seconds)),
-                duration_minutes=int(math.ceil(seconds / 60)),
+                duration_seconds=primary.duration_seconds,
+                duration_minutes=primary.duration_minutes,
                 provider="tomtom",
                 retrieved_at=retrieved_at,
                 traffic_included=True,
                 route_time_basis=time_basis,
-                traffic_delay_seconds=_optional_seconds(summary, "trafficDelayInSeconds"),
-                no_traffic_travel_time_seconds=_optional_seconds(summary, "noTrafficTravelTimeInSeconds"),
-                historic_traffic_travel_time_seconds=_optional_seconds(summary, "historicTrafficTravelTimeInSeconds"),
-                live_traffic_incidents_travel_time_seconds=_optional_seconds(summary, "liveTrafficIncidentsTravelTimeInSeconds"),
-                traffic_sections=_traffic_sections(
-                    route,
-                    diagnose_unnamed=diagnose_unnamed_traffic_sections,
-                    geocode=lambda coordinate: _reverse_geocode_location(coordinate, self.api_key),
-                ),
+                traffic_delay_seconds=primary.traffic_delay_seconds,
+                no_traffic_travel_time_seconds=primary.no_traffic_travel_time_seconds,
+                historic_traffic_travel_time_seconds=primary.historic_traffic_travel_time_seconds,
+                live_traffic_incidents_travel_time_seconds=primary.live_traffic_incidents_travel_time_seconds,
+                traffic_sections=primary.traffic_sections,
+                selected_route_id=primary.route_id,
+                alternatives=alternatives,
             )
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
             raise RoutingProviderError from exc

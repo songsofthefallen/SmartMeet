@@ -31,7 +31,7 @@ from models import Base, Schedule
 from routers.schedules import create_schedule
 from schemas import ScheduleCreate
 from routers.extraction import get_extraction_service
-from routers.schedules import get_weather_service
+from routers.schedules import get_map_service, get_weather_service
 from schemas import WeatherEstimate
 
 
@@ -555,6 +555,67 @@ def test_missing_schedule_returns_404(
     response = getattr(TestClient(app), method)(path, headers=bearer(signing_key), **request)
     assert response.status_code == 404
     assert response.json()["detail"] == "Schedule not found"
+
+
+def test_route_map_requires_auth_and_returns_cached_image(
+    api_db: None, signing_key: str,
+) -> None:
+    class StubMapService:
+        def static_image(self, bbox: tuple[float, float, float, float]) -> tuple[bytes, str]:
+            assert bbox == (-123.1, 37.0, -122.0, 38.0)
+            return b"png-image", "image/png"
+
+    app.dependency_overrides[get_map_service] = lambda: StubMapService()
+    client = TestClient(app)
+    path = "/schedules/route-map?min_lon=-123.1&min_lat=37&max_lon=-122&max_lat=38"
+    assert client.get(path).status_code == 401
+    response = client.get(path, headers=bearer(signing_key))
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert response.content == b"png-image"
+
+
+def test_route_map_rejects_inverted_bounds(api_db: None, signing_key: str) -> None:
+    response = TestClient(app).get(
+        "/schedules/route-map?min_lon=1&min_lat=2&max_lon=0&max_lat=3",
+        headers=bearer(signing_key),
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("reason", "provider_status", "expected_status", "message"),
+    [
+        ("credentials", 403, 503, "Enable the Maps Static Image API"),
+        ("rate_limit", 429, 429, "limit reached"),
+        ("timeout", None, 504, "timed out"),
+        ("provider_error", 502, 502, "temporarily unavailable"),
+    ],
+)
+def test_route_map_translates_upstream_failures_safely(
+    api_db: None,
+    signing_key: str,
+    reason: str,
+    provider_status: int | None,
+    expected_status: int,
+    message: str,
+) -> None:
+    from map_service import MapProviderError
+    from routers.schedules import get_map_service
+
+    class FailingMapService:
+        def static_image(self, bbox: tuple[float, float, float, float]) -> tuple[bytes, str]:
+            raise MapProviderError("private upstream response", reason=reason, provider_status=provider_status)
+
+    app.dependency_overrides[get_map_service] = lambda: FailingMapService()
+    response = TestClient(app).get(
+        "/schedules/route-map?min_lon=1&min_lat=2&max_lon=3&max_lat=4",
+        headers=bearer(signing_key),
+    )
+    assert response.status_code == expected_status
+    assert message in response.json()["detail"]
+    assert "private upstream response" not in response.text
 
 
 def test_cross_user_cannot_read_update_or_cancel(

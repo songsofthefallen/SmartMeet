@@ -41,6 +41,7 @@ class ScheduleCreate(BaseModel):
     travel_duration_minutes: DurationMinutes | None = None
     idempotency_key: Annotated[str, StringConstraints(min_length=16, max_length=64)] | None = None
     continue_without_route: bool = False
+    selected_route_id: Annotated[str, StringConstraints(min_length=1, max_length=20)] | None = None
 
     @field_validator("target_datetime")
     @classmethod
@@ -58,6 +59,19 @@ class ScheduleCreate(BaseModel):
         return _require_timezone(value)
 
 
+class RouteOptionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    origin_location: "LocationSelection"
+    location: "LocationSelection"
+    time_intent: TimeIntent
+    target_datetime: datetime
+
+    @field_validator("target_datetime")
+    @classmethod
+    def target_datetime_must_be_aware(cls, value: datetime) -> datetime:
+        return _require_aware(value)
+
+
 class ScheduleUpdate(BaseModel):
     """Partial schedule fields; unset values can be distinguished via model_fields_set."""
 
@@ -72,6 +86,7 @@ class ScheduleUpdate(BaseModel):
     timezone: NonEmptyTimezone | None = None
     preparation_duration_minutes: DurationMinutes | None = None
     travel_duration_minutes: DurationMinutes | None = None
+    selected_route_id: Annotated[str, StringConstraints(min_length=1, max_length=20)] | None = None
     status: ScheduleStatus | None = None
 
     @model_validator(mode="after")
@@ -278,6 +293,21 @@ class WeatherEstimate(BaseModel):
         return _require_aware(value) if value is not None else None
 
 
+class RouteAlternative(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    route_id: Annotated[str, StringConstraints(min_length=1, max_length=20)]
+    duration_seconds: int = Field(ge=0)
+    duration_minutes: int = Field(ge=0)
+    distance_meters: int | None = Field(default=None, ge=0)
+    traffic_delay_seconds: int | None = Field(default=None, ge=0)
+    no_traffic_travel_time_seconds: int | None = Field(default=None, ge=0)
+    historic_traffic_travel_time_seconds: int | None = Field(default=None, ge=0)
+    live_traffic_incidents_travel_time_seconds: int | None = Field(default=None, ge=0)
+    traffic_sections: list["TrafficSection"] = Field(default_factory=list, max_length=100)
+    road_names: list[Annotated[str, StringConstraints(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=10)
+    geometry: list["TrafficCoordinate"] = Field(default_factory=list, max_length=500)
+
+
 class TravelEstimate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     duration_seconds: int = Field(ge=0)
@@ -291,6 +321,9 @@ class TravelEstimate(BaseModel):
     historic_traffic_travel_time_seconds: int | None = Field(default=None, ge=0)
     live_traffic_incidents_travel_time_seconds: int | None = Field(default=None, ge=0)
     traffic_sections: list["TrafficSection"] = Field(default_factory=list, max_length=100)
+    selected_route_id: Annotated[str, StringConstraints(min_length=1, max_length=20)] = "0"
+    # TomTom's maxAlternatives is additional to the primary route: 1 + 5.
+    alternatives: list[RouteAlternative] = Field(default_factory=list, max_length=6)
 
     @field_validator(
         "traffic_delay_seconds",

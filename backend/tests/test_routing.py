@@ -517,6 +517,7 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
         assert params["computeTravelTimeFor"] == "all"
         assert params["sectionType"] == ["traffic", "importantRoadStretch"]
         assert params["routeRepresentation"] == "polyline"
+        assert params["maxAlternatives"] == "5"
         assert "departAt" not in params and "arriveAt" not in params
         assert timeout == 35.0
         return Response()
@@ -541,7 +542,94 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
     assert result.traffic_sections[0].end_coordinates.longitude == 121.1
     assert result.traffic_sections[1].road_names == []
     assert result.traffic_sections[1].end_coordinates is None
+    assert len(result.alternatives[0].geometry) == 3
     assert before_request <= result.retrieved_at <= datetime.now(timezone.utc)
+
+
+def test_tomtom_parses_each_valid_route_and_ignores_invalid_alternatives(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]:
+            return {"routes": [
+                {"summary": {"travelTimeInSeconds": 600, "lengthInMeters": 5000, "trafficDelayInSeconds": 120, "noTrafficTravelTimeInSeconds": 400}, "sections": [{"sectionType": "IMPORTANT_ROAD_STRETCH", "streetName": {"text": "First Road"}}]},
+                {"summary": {"travelTimeInSeconds": 900, "lengthInMeters": 8000}, "sections": [{"sectionType": "TRAFFIC", "delayInSeconds": 300, "simpleCategory": "JAM"}]},
+                {"summary": {"travelTimeInSeconds": -1}},
+            ]}
+
+    monkeypatch.setattr("routing_service.httpx.get", lambda *args, **kwargs: Response())
+    result = TomTomRoutingService(api_key="test-server-key").estimate(
+        LocationSelection(name="A", latitude=1, longitude=2), LocationSelection(name="B", latitude=3, longitude=4),
+    )
+    assert [item.route_id for item in result.alternatives] == ["0", "1"]
+    assert result.alternatives[0].distance_meters == 5000
+    assert result.alternatives[0].road_names == ["First Road"]
+    assert result.alternatives[1].traffic_sections[0].incident_type == "JAM"
+
+
+def test_tomtom_accepts_primary_route_plus_five_alternatives(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]:
+            return {"routes": [
+                {"summary": {"travelTimeInSeconds": (index + 1) * 60, "lengthInMeters": (index + 1) * 1000}}
+                for index in range(6)
+            ]}
+
+    monkeypatch.setattr("routing_service.httpx.get", lambda *args, **kwargs: Response())
+    result = TomTomRoutingService(api_key="test-server-key").estimate(
+        LocationSelection(name="A", latitude=1, longitude=2),
+        LocationSelection(name="B", latitude=3, longitude=4),
+    )
+    assert len(result.alternatives) == 6
+    assert result.selected_route_id == "0"
+    assert result.alternatives[-1].route_id == "5"
+
+
+def test_selected_alternative_replaces_estimate_and_refreshes_weather(api_db: None, signing_key: str) -> None:
+    first = TravelEstimate.model_validate(estimate(37).model_dump() | {"alternatives": [
+        {"route_id": "0", "duration_seconds": 2220, "duration_minutes": 37, "distance_meters": 5000, "traffic_delay_seconds": 60, "no_traffic_travel_time_seconds": 1800, "historic_traffic_travel_time_seconds": None, "live_traffic_incidents_travel_time_seconds": None, "traffic_sections": [], "road_names": ["First Road"]},
+        {"route_id": "1", "duration_seconds": 3000, "duration_minutes": 50, "distance_meters": 8000, "traffic_delay_seconds": 300, "no_traffic_travel_time_seconds": 2400, "historic_traffic_travel_time_seconds": None, "live_traffic_incidents_travel_time_seconds": None, "traffic_sections": [{"severity": "some_delay", "delay_seconds": 300, "road_names": ["Second Road"], "incident_type": "JAM"}], "road_names": ["Second Road"]},
+    ]})
+    service = StubRouting(first)
+    app.dependency_overrides[get_routing_service] = lambda: service
+    weather = StubWeather()
+    app.dependency_overrides[get_weather_service] = lambda: weather
+    client = TestClient(app)
+    created = client.post("/schedules", headers=bearer(signing_key), json=route_payload())
+    schedule_id = created.json()["id"]
+    changed = client.patch(f"/schedules/{schedule_id}", headers=bearer(signing_key), json={"selected_route_id": "1"})
+    assert changed.status_code == 200
+    body = changed.json()
+    assert body["travel_estimate"]["selected_route_id"] == "1"
+    assert body["travel_estimate"]["traffic_sections"][0]["road_names"] == ["Second Road"]
+    assert body["travel_duration_minutes"] == 50
+    assert body["calculated_departure_time"] == "2026-10-10T22:10:00Z"
+    assert body["weather_estimate"]["origin_forecast_at"] == "2026-10-10T22:00:00Z"
+    app.dependency_overrides.pop(get_routing_service, None)
+    app.dependency_overrides.pop(get_weather_service, None)
+
+
+def test_route_options_preview_and_create_use_the_chosen_route(api_db: None, signing_key: str) -> None:
+    options = TravelEstimate.model_validate(estimate(37).model_dump() | {"alternatives": [
+        {"route_id": "0", "duration_seconds": 2220, "duration_minutes": 37, "distance_meters": 5000, "traffic_delay_seconds": None, "no_traffic_travel_time_seconds": None, "historic_traffic_travel_time_seconds": None, "live_traffic_incidents_travel_time_seconds": None, "traffic_sections": [], "road_names": []},
+        {"route_id": "1", "duration_seconds": 3000, "duration_minutes": 50, "distance_meters": 8000, "traffic_delay_seconds": None, "no_traffic_travel_time_seconds": None, "historic_traffic_travel_time_seconds": None, "live_traffic_incidents_travel_time_seconds": None, "traffic_sections": [], "road_names": []},
+    ]})
+    service = StubRouting([options, options])
+    app.dependency_overrides[get_routing_service] = lambda: service
+    client = TestClient(app)
+    headers = bearer(signing_key)
+    request = route_payload()
+    route_request = {key: request[key] for key in ("origin_location", "location", "time_intent", "target_datetime")}
+    preview = client.post("/schedules/route-options", headers=headers, json=route_request)
+    assert preview.status_code == 200
+    assert [option["route_id"] for option in preview.json()["alternatives"]] == ["0", "1"]
+    created = client.post("/schedules", headers=headers, json=request | {"selected_route_id": "1"})
+    assert created.status_code == 201
+    assert created.json()["travel_estimate"]["selected_route_id"] == "1"
+    assert created.json()["travel_duration_minutes"] == 50
+    assert created.json()["calculated_departure_time"] == "2026-10-10T22:10:00Z"
+    assert service.calls[0][2].get("arrive_at") is not None
+    app.dependency_overrides.pop(get_routing_service, None)
 
 
 def test_route_delay_and_incident_delays_remain_independent_provider_fields(monkeypatch: pytest.MonkeyPatch) -> None:

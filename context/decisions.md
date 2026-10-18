@@ -215,3 +215,24 @@
 - Decision: Strip and retain the AI-provided offset separately, preserve the wall-clock time, resolve the intended timezone from an explicit IANA timezone or a time-bound departure origin / arrival destination, and otherwise use the selected timezone. A general trip-place mention does not set the event timezone. Validate the model offset against the date-specific IANA offset; when it disagrees, use the local clock and IANA rules to obtain the UTC instant rather than corrupting the clock value.
 - Ambiguity: If a time-bound location establishes local time but its timezone cannot be resolved from an explicit zone, recognized IANA city, or model zone, retain the selected timezone and report timezone ambiguity. Existing DST gap/repeated-time clarification remains in force.
 - Persistence: No schema or migration change.
+
+## DEC-036 - Persist TomTom route choices in the existing travel estimate
+- Context: Spec 16 needs multiple driving route choices and must keep the selected route's duration, incident data, and downstream weather timing together while preserving older schedules.
+- Decision: Request up to five TomTom alternatives and store validated route summaries, route-specific geometry, traffic sections, distance, and road labels alongside the selected route fields inside the existing nullable `travel_estimate` JSON. The first provider route is the initial selection. An authenticated schedule update can select one of the stored route IDs; the backend atomically replaces selected estimate fields, updates travel duration, recalculates schedule times, and reassesses weather. Route identity is provider-response index scoped to that saved estimate and is replaced on route refresh or endpoint/time changes.
+- Compatibility: Existing estimate JSON without alternatives remains readable. No relational schema change or migration is required. Manually entered durations clear provider estimate metadata as before.
+- Tradeoffs: Route alternatives are saved with the estimate snapshot and can be selected without another provider request. A refreshed route set replaces prior IDs. The UI draws a simple geometry preview from provider coordinates; this is not a navigation map.
+
+## DEC-037 - Keep route status and retry visible without an estimate
+- Context: Schedule detail previously hid the Travel and traffic card without a saved route estimate and offered only a weather refresh, so routing failures during create could leave users with no visible route recovery path.
+- Decision: Show the travel/traffic status card whenever both confirmed endpoints are saved, even if routing is unavailable. For upcoming schedules, expose a route-estimate action when no estimate exists; keep the saved-estimate refresh cooldown behavior unchanged. Show the route chooser for any returned route set, including the single-route case, so Spec 16 is discoverable.
+- Compatibility: Location-free schedules keep the existing compact UI. Past schedules retain historical handling and cannot request a live route.
+
+## DEC-038 - Preview and choose routes before creating a schedule
+- Context: Showing alternatives only after schedule creation prevents users from choosing a route before saving and makes a failed initial estimate look like a missing travel-duration entry.
+- Decision: Add an authenticated, non-persisting route-options request that uses the schedule's target time and intent. In the create form, load and display route choices after both confirmed endpoints, target time, and intent are available. Require a route selection before normal create and before assistant autosave; users can explicitly opt to save without an estimate if routing fails. Create repeats the validated provider lookup and applies the submitted route ID to the matching returned option, rejecting stale/missing route IDs rather than silently substituting another route.
+- Tradeoff: Route lookup occurs once for preview and once for create to keep provider data validated server-side without adding durable preview state or a new database migration.
+
+## DEC-039 - Compare route geometries over a TomTom road map
+- Context: The existing route chooser rendered each geometry as a line on a blank SVG, so routes with the same road labels were difficult to distinguish geographically.
+- Decision: Request one TomTom Static Image road map for the combined route geometry bounds and overlay each route in a distinct color with shared start/destination markers. Show this comparison in both the pre-save chooser and saved schedule details. Fetch images through an authenticated backend endpoint; keep the TomTom key server-side and fall back to route details when map retrieval fails.
+- Tradeoffs: This uses a bounded extra map image request per route-comparison view. Familiar map labels and nearby places depend on TomTom coverage and are not guaranteed. No saved schema or database migration is needed.

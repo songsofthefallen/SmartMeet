@@ -53,10 +53,10 @@ def test_schedule_model_persists_fields_and_defaults_in_sqlite() -> None:
     Base.metadata.create_all(engine)
     try:
         with Session(engine) as session:
-            schedule = Schedule(
-                clerk_user_id="user_123",
-                **ScheduleCreate.model_validate(valid_schedule_payload()).model_dump(),
-            )
+            values = ScheduleCreate.model_validate(valid_schedule_payload()).model_dump()
+            values.pop("continue_without_route", None)
+            values.pop("selected_route_id", None)
+            schedule = Schedule(clerk_user_id="user_123", **values)
             session.add(schedule)
             session.commit()
             session.refresh(schedule)
