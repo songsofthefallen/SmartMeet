@@ -22,6 +22,18 @@ class ScheduleStatus(str, Enum):
     COMPLETED = "completed"
 
 
+class ReminderStatus(str, Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class ReminderType(str, Enum):
+    WAKE = "wake"
+    DEPARTURE = "departure"
+
+
 class Schedule(Base):
     """A schedule owned by a Clerk user."""
 
@@ -88,6 +100,32 @@ class Schedule(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp()
     )
+
+
+class Reminder(Base):
+    """Durable reminder queue entry; delivery is handled by a future provider."""
+
+    __tablename__ = "reminders"
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "reminder_type", "scheduled_for", name="uq_reminders_schedule_type_time"),
+        Index("ix_reminders_status_scheduled_for", "status", "scheduled_for"),
+        CheckConstraint("attempt_count >= 0", name="ck_reminders_attempt_nonnegative"),
+        CheckConstraint("status IN ('pending', 'sent', 'cancelled', 'failed')", name="reminderstatus"),
+        CheckConstraint("reminder_type IN ('wake', 'departure')", name="remindertype"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    schedule_id: Mapped[int] = mapped_column(ForeignKey("schedules.id", ondelete="CASCADE"), nullable=False)
+    clerk_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    reminder_type: Mapped[ReminderType] = mapped_column(String(16), nullable=False)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[ReminderStatus] = mapped_column(String(16), nullable=False, default=ReminderStatus.PENDING)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp())
 
 
 class RouteRefreshAttempt(Base):

@@ -23,6 +23,7 @@ from schemas import LocationSelection, RouteLandmark, RouteLandmarksRequest, Rou
 from routing_service import RoutingProviderConfigurationError, RoutingProviderError, TomTomRoutingService
 from time_calculation import CalculationSettings, calculate_schedule_times, recalculate_schedule
 from route_refresh_limits import RouteRefreshRateLimited, finish_attempt, reserve_attempt
+from reminder_service import sync_schedule_reminders
 from weather_service import OpenMeteoWeatherService
 
 
@@ -461,6 +462,18 @@ def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser
     _calculate(schedule)
     db.add(schedule)
     try:
+        try:
+            db.flush()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A schedule with this name already exists in your account.",
+            ) from exc
+        except SQLAlchemyError as exc:
+            db.rollback()
+            raise HTTPException(status_code=500, detail="Unable to save schedule") from exc
+        sync_schedule_reminders(schedule, db)
         _commit(db)
     except HTTPException as exc:
         if payload.idempotency_key:
@@ -554,6 +567,7 @@ def update_schedule(
         if route_inputs_changed or duration_cleared or "travel_duration_minutes" in payload.model_fields_set or target_changed or selected_route_id is not None:
             _refresh_weather(schedule, weather)
         _calculate(schedule)
+        sync_schedule_reminders(schedule, db)
         _commit(db)
         db.refresh(schedule)
         return schedule
@@ -568,6 +582,7 @@ def cancel_schedule(schedule_id: int, db: DbSession, user_id: CurrentUser) -> Sc
         schedule = _owned_schedule(db, schedule_id, user_id)
         schedule.status = ScheduleStatus.CANCELLED
         _calculate(schedule)
+        sync_schedule_reminders(schedule, db)
         _commit(db)
         db.refresh(schedule)
         return schedule

@@ -1,5 +1,15 @@
 ## Current Progress
 
+### Spec 17 - Reminder model and scheduling (scheduling persistence implemented; delivery remains)
+
+- Added persistent wake/departure reminder records backed by MySQL and a migration, with UTC trigger instants, IANA timezone, status, attempt count, sent time, error, and duplicate constraint.
+- Schedule create/edit/cancel reconciles reminders in the same transaction. Pending reminders track calculated times; cancelled schedules cancel pending rows; sent reminders remain sent. Past or unavailable calculations do not create reminders.
+- Scheduler choice: database-backed durable queue polled by a future worker. No separate broker dependency is needed, and pending rows survive process restarts. No notification delivery/provider or polling worker is implemented yet; Web Push remains subsequent work.
+- Timing assumption: because lead times are not defined, reminders currently use the calculated wake and departure instants themselves.
+- Verification: backend suite **281 passed**; `npm run lint`, `npx tsc --noEmit`, `npm run build`, `alembic check`, and `git diff --check` passed. Migration `20261019_0010` was applied to configured MySQL; `alembic current` reports `20261019_0010 (head)`.
+- `alembic upgrade head --sql` could not render the full chain because pre-existing revision `20261016_0009` queries existing rows and fails in Alembic offline mode. Online MySQL migration and metadata checks passed.
+- Remaining: no worker polls and dispatches due rows yet, no retry/lease implementation or notification provider exists, and reminder lead time semantics need product confirmation. Automated tests cover persistence, UTC/timezone storage, duplicate sync, rescheduling, cancellation, and preserving sent records, not live worker delivery or process restart behavior.
+
 ### Spec 16 follow-up - Restore saved-view refresh actions
 
 - Restored only the route-estimate and weather-advisory refresh buttons in saved schedule view. Route-choice radios and the alternative list remain available only in create/edit mode.
