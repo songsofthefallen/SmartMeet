@@ -17,7 +17,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=configured_origins(),
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PATCH"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Accept", "Authorization", "Content-Type"],
 )
 
@@ -67,7 +67,9 @@ def auth_me(user_id: Annotated[str, Depends(verify_clerk_token)]) -> dict[str, s
 from routers.extraction import router as extraction_router
 from routers.locations import router as locations_router
 from routers.schedules import router as schedules_router
+from routers.push import router as push_router
 
 app.include_router(extraction_router)
 app.include_router(locations_router)
 app.include_router(schedules_router)
+app.include_router(push_router)

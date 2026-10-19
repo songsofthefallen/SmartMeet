@@ -1,8 +1,4 @@
-"""Standalone database-backed reminder worker.
-
-Run with ``python -m reminder_worker`` from ``backend/``. Delivery is an
-injected handler; this module deliberately does not implement Web Push.
-"""
+"""Standalone database-backed reminder worker with Web Push delivery."""
 
 from __future__ import annotations
 
@@ -304,15 +300,13 @@ def run_worker(
             time.sleep(config.poll_seconds)
 
 
-def _delivery_unconfigured(_message: ReminderMessage) -> bool:
-    """Safe default until a real delivery provider is configured."""
-    raise RetryableProcessingError("delivery handler is not configured")
-
-
 def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     poll = float(os.getenv("REMINDER_WORKER_POLL_SECONDS", "2"))
-    run_worker(get_session_factory(), _delivery_unconfigured, settings=WorkerSettings(poll_seconds=poll))
+    from push_service import WebPushDelivery
+
+    factory = get_session_factory()
+    run_worker(factory, WebPushDelivery(factory), settings=WorkerSettings(poll_seconds=poll))
 
 
 if __name__ == "__main__":

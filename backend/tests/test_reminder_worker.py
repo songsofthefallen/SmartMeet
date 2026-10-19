@@ -11,7 +11,6 @@ from reminder_worker import (
     ClaimedReminder,
     RetryableProcessingError,
     WorkerSettings,
-    _delivery_unconfigured,
     claim_due_reminders,
     process_claim,
     run_worker,
@@ -142,7 +141,10 @@ def test_unconfigured_delivery_handler_retries_with_exponential_backoff_then_fai
         claim = claim_due_reminders(
             factory, worker_id="worker-default-handler", now=now, max_attempts=config.max_attempts,
         )[0]
-        result = process_claim(factory, claim, _delivery_unconfigured, now=now, settings=config)
+        def temporary_provider_failure(_message):
+            raise RetryableProcessingError("temporary provider failure")
+
+        result = process_claim(factory, claim, temporary_provider_failure, now=now, settings=config)
         with factory() as db:
             row = db.get(Reminder, reminder_id)
             assert row is not None

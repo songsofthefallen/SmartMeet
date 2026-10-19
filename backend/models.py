@@ -34,6 +34,20 @@ class ReminderType(str, Enum):
     DEPARTURE = "departure"
 
 
+class PushSubscription(Base):
+    """User-owned Web Push registration; subscription payload is encrypted."""
+
+    __tablename__ = "push_subscriptions"
+    __table_args__ = (UniqueConstraint("endpoint_hash", name="uq_push_subscriptions_endpoint_hash"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clerk_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    endpoint_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    encrypted_subscription: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp())
+
+
 class Schedule(Base):
     """A schedule owned by a Clerk user."""
 

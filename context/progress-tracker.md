@@ -1,16 +1,23 @@
 ## Current Progress
 
-### Spec 17 - Reminder model and scheduling (database worker implemented; delivery provider remains)
+### Spec 18 - Web Push Backend Delivery
+
+- Implemented: authenticated subscription registration/removal and `POST /push/test`, encrypted subscription payload storage keyed by endpoint hash, VAPID delivery service, wake/departure notification payloads, and worker wiring through `WebPushDelivery`.
+- Outcomes: provider success is the only delivery confirmation; 404/410 removes the expired endpoint, throttling/server/transport errors retry through the existing bounded lease flow, permanent rejections fail, and missing subscriptions fail without futile retries. Once any endpoint accepts, the reminder is confirmed to avoid retrying to that endpoint and causing likely duplicates.
+- Security: VAPID private key and Fernet encryption key stay backend-only. API requests validate field bounds and HTTPS endpoints; endpoint hashes are used for lookup and secrets are not logged or returned. Subscription removal is scoped to the verified Clerk subject.
+- Migration: revision `20261019_0012` adds encrypted subscription storage; configured MySQL reports current revision `20261019_0011`, so `0012` is pending. Targeted offline SQL generation for `0011 → 0012` passed; the migration was not applied.
+- Environment: `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, and `PUSH_SUBSCRIPTION_ENCRYPTION_KEY` are required to operate delivery/storage.
+- Verification: full backend pytest **306 passed**; focused push/worker tests **22 passed**; `npm run test:frontend`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, targeted Alembic SQL generation for revision `0012`, and `git diff --check` passed. `python -m compileall` passed. Full-history `alembic upgrade head --sql` cannot render because pre-existing revision `20261016_0009` queries existing rows during offline execution; targeted `0011 → 0012` generation succeeds. No live migration was applied.
+- Manual verification outstanding: apply the migration, configure real VAPID/encryption values, register a browser subscription after Spec 19's service worker exists, and confirm a real test notification. A provider 2xx confirms service acceptance, not display. Exactly-once delivery is not possible across a worker crash after provider acceptance and before DB confirmation. Partial multi-device delivery confirms on first acceptance; another device may miss that instance.
+
+### Completed Spec 17 - Reminder model and scheduling
 
 - Added persistent wake/departure reminder records backed by MySQL and a migration, with UTC trigger instants, IANA timezone, status, attempt count, sent time, error, and duplicate constraint.
 - Schedule create/edit/cancel reconciles reminders in the same transaction. Pending reminders track calculated times; cancelled schedules cancel pending rows; sent reminders remain sent. Past or unavailable calculations do not create reminders.
-- Scheduler choice: database-backed durable queue polled by the standalone `python -m reminder_worker` process. MySQL claims use row locks with `SKIP LOCKED`; UUID tokens, lease expiry, and next-attempt timestamps support competing workers, retry delays, and crash recovery. No separate broker dependency is needed.
-- Added schedule validity checks before handling, sanitized error records, capped exponential retry, and sent status only after the injected handler confirms delivery. The default handler is intentionally unconfigured and does not claim delivery. Web Push remains subsequent work.
-- Operational logging now reports worker startup, database connection, polling, expired-lease recovery, retries/exhaustion, and unexpected processing/polling errors using only counts and exception class names. Tests verify logs omit exception text that could contain secrets or personal data.
-- Retry investigation: repeated `RetryableProcessingError` comes from `_delivery_unconfigured`, the command-line worker's default handler, which always raises until a delivery provider is configured. Handler failures already used capped exponential backoff and failed on the configured maximum (default five attempts). Fixed the separate crash-recovery edge case: an expired lease already at the attempt limit now transitions to failed instead of being reclaimed forever. Added default-handler/backoff and final-claim crash regression tests; no schema change.
-- Timing assumption: because lead times are not defined, reminders currently use the calculated wake and departure instants themselves.
-- Verification: full backend suite **295 passed** (including **14** worker tests); `git diff --check` passed. No frontend changes or schema migration were needed for this investigation.
-- Remaining: Web Push/provider integration and the reminder lead-time decision. Exactly-once delivery cannot be guaranteed if a future provider accepts a message and the worker crashes before recording confirmation; use the reminder ID as provider idempotency key where supported.
+- Scheduler choice: database-backed queue polled by standalone `python -m reminder_worker`. MySQL claims use row locks with `SKIP LOCKED`; UUID tokens, lease expiry, and next-attempt timestamps support competing workers, retry delays, and crash recovery.
+- Schedule validity checks, sanitized error records, capped exponential retries, and confirmed-send-only status were added. Expired final claims become failed rather than being reclaimed forever. Operational logs omit exception text and secrets.
+- Timing assumption: because lead times are undefined, reminders use the calculated wake and departure instants themselves.
+- Verification at Spec 17 completion: backend suite **295 passed** (including 14 worker tests); `git diff --check` passed. Migration was already present as revisions `20261019_0010` and `_0011`; no live schema migration was applied during Spec 17.
 
 ### Spec 16 follow-up - Restore saved-view refresh actions
 

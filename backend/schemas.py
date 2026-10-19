@@ -396,3 +396,20 @@ class LocationSearchRequest(BaseModel):
 
 class LocationSearchResponse(BaseModel):
     results: list[LocationSelection]
+
+
+class PushSubscriptionKeys(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    p256dh: Annotated[str, StringConstraints(min_length=20, max_length=256)]
+    auth: Annotated[str, StringConstraints(min_length=16, max_length=128)]
+
+
+class PushSubscriptionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    endpoint: Annotated[str, StringConstraints(min_length=20, max_length=2048)]
+    keys: PushSubscriptionKeys
+
+
+class PushSubscriptionDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    endpoint: Annotated[str, StringConstraints(min_length=20, max_length=2048)]

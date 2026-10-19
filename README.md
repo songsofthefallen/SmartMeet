@@ -336,3 +336,17 @@ If a script such as `npm test` is not defined in `package.json`, use the project
 - [OpenRouter Documentation](https://openrouter.ai/docs)
 - [TomTom Developer Documentation](https://developer.tomtom.com/)
 - [Open-Meteo Documentation](https://open-meteo.com/en/docs)
+# Web Push backend setup (Spec 18)
+
+Install the backend dependencies, then configure these values in the ignored `backend/.env` file:
+
+- `VAPID_PUBLIC_KEY`: URL-safe base64 public VAPID key (used by the next browser-subscription feature).
+- `VAPID_PRIVATE_KEY`: matching server-only VAPID private key. Never put it in frontend variables.
+- `VAPID_SUBJECT`: contact URI such as `mailto:you@example.com` or an HTTPS application URL.
+- `PUSH_SUBSCRIPTION_ENCRYPTION_KEY`: Fernet key used to encrypt each stored subscription payload. Back it up securely; losing it makes existing subscriptions unreadable.
+
+Generate a VAPID pair with the installed `vapid --gen` command. Set `VAPID_PUBLIC_KEY` to the URL-safe application server key from `vapid --applicationServerKey`; set `VAPID_PRIVATE_KEY` to the matching PEM private-key contents (escape newlines as `\n` in `.env`) or its unpadded URL-safe base64 DER form. The backend validates that both keys match. Generate the storage key with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Do not commit generated values. Run `alembic upgrade head` from `backend/` before starting the API or worker.
+
+Run the worker separately with `python -m reminder_worker` from `backend/`. The authenticated API accepts `POST /push/subscriptions` with a browser `PushSubscription.toJSON()` payload, `DELETE /push/subscriptions` with `{ "endpoint": "..." }`, and `POST /push/test` to send a one-off test notification to the signed-in user's registered endpoint(s).
+
+For a real delivery check, configure a test account and HTTPS frontend origin, apply migrations, install the next spec's service worker/permission flow, register its subscription while signed in, then call `POST /push/test` with that same Clerk bearer token. To verify worker delivery, create a future schedule with a wake/departure time and run the worker through that due instant (or use a disposable due reminder in a local test database). Provider HTTP 2xx means the push service accepted the request; it does not confirm that a device displayed it.
