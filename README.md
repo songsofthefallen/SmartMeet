@@ -273,6 +273,17 @@ Some features require valid provider credentials and an available API connection
 
 ## 7. Running Tests
 
+### Reminder worker
+
+The worker runs separately from FastAPI and uses the same `backend/.env` database configuration. From the repository root:
+
+```powershell
+cd backend
+python -m reminder_worker
+```
+
+The worker uses a safe unconfigured delivery handler until a notification provider is added. It will retry a bounded number of times and then mark due reminders failed; it does not send Web Push or claim delivery.
+
 ### Backend tests
 
 From the repository root:

@@ -87,7 +87,8 @@ Next.js browser UI
 ### Reminder Scheduling and Web Push
 - Prefer Web Push with a service worker and push subscription so reminders can be delivered without relying on a page timer remaining active.
 - This still depends on browser/device support, user permission, connectivity, subscription validity, and push-service behavior; do not promise perfect delivery.
-- A backend durable scheduler must trigger due reminders and send push messages. The scheduler/queue technology remains undecided.
+- A separate database-backed worker polls the MySQL reminders table. It uses `SELECT ... FOR UPDATE SKIP LOCKED` claims with expiring leases, so claims survive process crashes and multiple workers do not select the same live claim. SQLite local tests serialize claims with an immediate write transaction.
+- The worker validates that the schedule remains active and the reminder still matches its calculated instant/timezone before processing. Delivery is an injected handler; only explicit delivery confirmation changes status to sent. Web Push remains a separate provider integration.
 - Store subscriptions securely and associate them with the authenticated user; support subscription expiration/revocation.
 - Persist reminder state and make delivery idempotent where feasible.
 - Schedule edits/cancellations must update or invalidate pending reminders.

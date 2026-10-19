@@ -250,7 +250,13 @@
 - Tradeoffs: Edits to endpoints or scheduled time perform the existing server-side route recalculation on save so browser preview data is not trusted as the persisted estimate. Selecting an alternative from an unchanged saved route set does not add a routing request or bypass route-refresh limits.
 
 ## DEC-042 - Persist reminders in a MySQL-backed queue
-- Status: Confirmed for Spec 17 scheduling groundwork
+- Status: Confirmed
 - Context: The application already uses MySQL and SQLAlchemy, and no separate queue infrastructure or notification delivery provider exists.
-- Decision: Persist wake and departure reminder instances in a `reminders` table in the same transaction as schedule create/edit/cancel. Store UTC trigger instants plus the schedule's IANA timezone. Enforce uniqueness on schedule, reminder type, and trigger instant. Preserve sent rows and reconcile pending rows on schedule changes. A future worker can poll this durable table after restarts.
-- Tradeoffs: This avoids adding Redis or a broker, but delivery needs a separately deployed polling worker and Web Push integration. Reminder lead times are undefined, so triggers use the calculated wake/departure instants themselves. Past instants are not queued.
+- Decision: Persist wake and departure reminder instances in a `reminders` table in the same transaction as schedule create/edit/cancel. Store UTC trigger instants plus the schedule's IANA timezone. Enforce uniqueness on schedule, reminder type, and trigger instant. Preserve sent rows and reconcile pending rows on schedule changes. A standalone worker polls this table.
+- Tradeoffs: This avoids adding Redis or a broker, but requires a separately deployed worker and notification provider. Reminder lead times are undefined, so triggers use the calculated wake/departure instants themselves. Past instants are not queued.
+
+## DEC-043 - Claim reminder work with expiring database leases
+- Status: Confirmed
+- Context: Multiple worker processes and abrupt restarts must not lose due reminders or concurrently process the same current claim.
+- Decision: Add a UUID claim token, lease expiry, and next-attempt instant to reminder rows. MySQL workers claim due pending rows in a transaction using `SELECT FOR UPDATE SKIP LOCKED`; an abandoned claim is recovered after lease expiry only while attempts remain. At the configured maximum, an expired final claim is marked failed rather than reclaimed indefinitely. Validate schedule status/timezone/calculated instant before invoking the injected handler. Increment attempts on claim, sanitize persisted errors, and retry temporary failures with capped exponential backoff. Mark sent only when the handler explicitly confirms delivery; the default no-provider handler never confirms.
+- Tradeoffs: Leases bound crash recovery but do not provide exactly-once external delivery if a provider accepts a message and the worker crashes before recording confirmation. The reminder ID should be used as an idempotency key when a future provider supports it.

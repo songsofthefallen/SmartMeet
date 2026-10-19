@@ -33,6 +33,9 @@ def sync_schedule_reminders(schedule: Schedule, db: Session, now: datetime | Non
     for row in rows:
         if row.status == ReminderStatus.PENDING and (row.reminder_type, _utc(row.scheduled_for)) not in wanted:
             row.status = ReminderStatus.CANCELLED
+            row.claim_token = None
+            row.lease_expires_at = None
+            row.next_attempt_at = None
     for kind, scheduled_for in wanted:
         row = existing.get((kind, scheduled_for))
         if row is None:
@@ -48,6 +51,9 @@ def sync_schedule_reminders(schedule: Schedule, db: Session, now: datetime | Non
             row.status = ReminderStatus.PENDING
             row.timezone = schedule.timezone
             row.last_error = None
+            row.claim_token = None
+            row.lease_expires_at = None
+            row.next_attempt_at = None
 
 
 def _utc(value: datetime) -> datetime:

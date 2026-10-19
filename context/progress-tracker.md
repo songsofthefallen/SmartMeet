@@ -1,14 +1,16 @@
 ## Current Progress
 
-### Spec 17 - Reminder model and scheduling (scheduling persistence implemented; delivery remains)
+### Spec 17 - Reminder model and scheduling (database worker implemented; delivery provider remains)
 
 - Added persistent wake/departure reminder records backed by MySQL and a migration, with UTC trigger instants, IANA timezone, status, attempt count, sent time, error, and duplicate constraint.
 - Schedule create/edit/cancel reconciles reminders in the same transaction. Pending reminders track calculated times; cancelled schedules cancel pending rows; sent reminders remain sent. Past or unavailable calculations do not create reminders.
-- Scheduler choice: database-backed durable queue polled by a future worker. No separate broker dependency is needed, and pending rows survive process restarts. No notification delivery/provider or polling worker is implemented yet; Web Push remains subsequent work.
+- Scheduler choice: database-backed durable queue polled by the standalone `python -m reminder_worker` process. MySQL claims use row locks with `SKIP LOCKED`; UUID tokens, lease expiry, and next-attempt timestamps support competing workers, retry delays, and crash recovery. No separate broker dependency is needed.
+- Added schedule validity checks before handling, sanitized error records, capped exponential retry, and sent status only after the injected handler confirms delivery. The default handler is intentionally unconfigured and does not claim delivery. Web Push remains subsequent work.
+- Operational logging now reports worker startup, database connection, polling, expired-lease recovery, retries/exhaustion, and unexpected processing/polling errors using only counts and exception class names. Tests verify logs omit exception text that could contain secrets or personal data.
+- Retry investigation: repeated `RetryableProcessingError` comes from `_delivery_unconfigured`, the command-line worker's default handler, which always raises until a delivery provider is configured. Handler failures already used capped exponential backoff and failed on the configured maximum (default five attempts). Fixed the separate crash-recovery edge case: an expired lease already at the attempt limit now transitions to failed instead of being reclaimed forever. Added default-handler/backoff and final-claim crash regression tests; no schema change.
 - Timing assumption: because lead times are not defined, reminders currently use the calculated wake and departure instants themselves.
-- Verification: backend suite **281 passed**; `npm run lint`, `npx tsc --noEmit`, `npm run build`, `alembic check`, and `git diff --check` passed. Migration `20261019_0010` was applied to configured MySQL; `alembic current` reports `20261019_0010 (head)`.
-- `alembic upgrade head --sql` could not render the full chain because pre-existing revision `20261016_0009` queries existing rows and fails in Alembic offline mode. Online MySQL migration and metadata checks passed.
-- Remaining: no worker polls and dispatches due rows yet, no retry/lease implementation or notification provider exists, and reminder lead time semantics need product confirmation. Automated tests cover persistence, UTC/timezone storage, duplicate sync, rescheduling, cancellation, and preserving sent records, not live worker delivery or process restart behavior.
+- Verification: full backend suite **295 passed** (including **14** worker tests); `git diff --check` passed. No frontend changes or schema migration were needed for this investigation.
+- Remaining: Web Push/provider integration and the reminder lead-time decision. Exactly-once delivery cannot be guaranteed if a future provider accepts a message and the worker crashes before recording confirmation; use the reminder ID as provider idempotency key where supported.
 
 ### Spec 16 follow-up - Restore saved-view refresh actions
 
