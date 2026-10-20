@@ -1,5 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import DashboardIdentity from "./dashboard-identity";
+import NotificationSettings from "./notification-settings";
 
 export const instant = false;
 
@@ -11,6 +12,7 @@ export default async function DashboardPage() {
         <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
         <p className="mt-2 text-sm text-[var(--text-secondary)]">Signed-in account</p>
         <DashboardIdentity />
+        <NotificationSettings />
       </section>
     </main>
   );

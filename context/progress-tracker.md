@@ -1,6 +1,6 @@
 ## Current Progress
 
-### Spec 18 - Web Push Backend Delivery
+### Completed Spec 18 - Web Push Backend Delivery
 
 - Implemented: authenticated subscription registration/removal and `POST /push/test`, encrypted subscription payload storage keyed by endpoint hash, VAPID delivery service, wake/departure notification payloads, and worker wiring through `WebPushDelivery`.
 - Outcomes: provider success is the only delivery confirmation; 404/410 removes the expired endpoint, throttling/server/transport errors retry through the existing bounded lease flow, permanent rejections fail, and missing subscriptions fail without futile retries. Once any endpoint accepts, the reminder is confirmed to avoid retrying to that endpoint and causing likely duplicates.
@@ -9,6 +9,15 @@
 - Environment: `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, and `PUSH_SUBSCRIPTION_ENCRYPTION_KEY` are required to operate delivery/storage.
 - Verification: full backend pytest **306 passed**; focused push/worker tests **22 passed**; `npm run test:frontend`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, targeted Alembic SQL generation for revision `0012`, and `git diff --check` passed. `python -m compileall` passed. Full-history `alembic upgrade head --sql` cannot render because pre-existing revision `20261016_0009` queries existing rows during offline execution; targeted `0011 → 0012` generation succeeds. No live migration was applied.
 - Manual verification outstanding: apply the migration, configure real VAPID/encryption values, register a browser subscription after Spec 19's service worker exists, and confirm a real test notification. A provider 2xx confirms service acceptance, not display. Exactly-once delivery is not possible across a worker crash after provider acceptance and before DB confirmation. Partial multi-device delivery confirms on first acceptance; another device may miss that instance.
+
+### Spec 19 - Service Worker and Push Notification UI (active)
+
+- Implemented: added root-scoped `public/service-worker.js` push display and same-origin notification-click focus/navigation. Added Dashboard notification settings for unsupported, permission-denied, disabled, enabled, and error states; explicit permission request; browser subscription reuse/creation; authenticated API registration/removal; test notification; and partial disable failure messaging.
+- Reused `scheduleApi` request/auth handling and the Spec 18 endpoints (`POST /push/subscriptions`, `DELETE /push/subscriptions`, `POST /push/test`). The UI sends only `PushSubscription.toJSON()` endpoint/key fields. No backend, reminder logic, or schema changes.
+- Configuration: set frontend `NEXT_PUBLIC_VAPID_PUBLIC_KEY` equal to backend `VAPID_PUBLIC_KEY`; backend private VAPID, subject, and Fernet keys remain backend-only. Added placeholder to root `.env.example` and setup/manual verification steps to README.
+- Changed files: `public/service-worker.js`, `app/dashboard/notification-settings.tsx`, `app/dashboard/page.tsx`, `lib/schedule-api.ts`, `lib/push-api.test.ts`, `package.json`, `.env.example`, `backend/.env.example`, `README.md`, `context/decisions.md`, and this tracker.
+- Verification: backend pytest **306 passed** (run from `backend/`); `npm run test:frontend` passed (including 3 new push API contract tests); `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed. One initial backend invocation from the repository root failed collection because backend modules are imported relative to `backend/`; the documented backend-directory invocation passed. Build/tests mock API behavior only and do not verify push service or browser display.
+- Manual verification outstanding: apply pending Spec 18 migration, configure matching real VAPID keys, exercise permission grant/deny and subscription registration/removal in a supported browser, receive/click a real test push, and confirm worker reminder delivery. Automated API tests do not establish real push delivery or device display.
 
 ### Completed Spec 17 - Reminder model and scheduling
 

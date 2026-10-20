@@ -349,4 +349,12 @@ Generate a VAPID pair with the installed `vapid --gen` command. Set `VAPID_PUBLI
 
 Run the worker separately with `python -m reminder_worker` from `backend/`. The authenticated API accepts `POST /push/subscriptions` with a browser `PushSubscription.toJSON()` payload, `DELETE /push/subscriptions` with `{ "endpoint": "..." }`, and `POST /push/test` to send a one-off test notification to the signed-in user's registered endpoint(s).
 
-For a real delivery check, configure a test account and HTTPS frontend origin, apply migrations, install the next spec's service worker/permission flow, register its subscription while signed in, then call `POST /push/test` with that same Clerk bearer token. To verify worker delivery, create a future schedule with a wake/departure time and run the worker through that due instant (or use a disposable due reminder in a local test database). Provider HTTP 2xx means the push service accepted the request; it does not confirm that a device displayed it.
+For browser delivery, copy the backend's public `VAPID_PUBLIC_KEY` into the frontend `.env.local` as `NEXT_PUBLIC_VAPID_PUBLIC_KEY`; this is the only VAPID value exposed to browser code. Keep `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, and `PUSH_SUBSCRIPTION_ENCRYPTION_KEY` in `backend/.env`. Restart both servers after configuration and apply pending backend migrations. Visit the signed-in Dashboard over localhost or HTTPS, enable notifications, then use **Send test notification**. Verify permission-denied, unsupported-browser, disable, and notification-click behavior manually. The test button reports push-service acceptance, not confirmed device display. To verify worker delivery, create a future schedule with a wake/departure time and run the worker through that due instant (or use a disposable due reminder in a local test database).
+
+## Browser notification verification (Spec 19)
+
+1. Configure the frontend's `NEXT_PUBLIC_VAPID_PUBLIC_KEY` to exactly match backend `VAPID_PUBLIC_KEY`; never add the private key to any `NEXT_PUBLIC_*` variable.
+2. Apply the pending push-subscription migration, sign in, open Dashboard, and enable browser notifications.
+3. Send a test notification and confirm it appears. Click it and confirm the app opens or focuses at `/schedules`.
+4. Disable notifications and confirm this browser subscription is removed. Repeat with permission denied and a browser without Push API support if available.
+5. Check that a failed API removal leaves a clear partial-failure message and that the user can retry.

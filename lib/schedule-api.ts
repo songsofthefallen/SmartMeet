@@ -278,7 +278,7 @@ async function request<T>(
       if (isRecord(payload.detail) && typeof payload.detail.code === "string" && typeof payload.detail.message === "string") {
         throw new ScheduleApiError(payload.detail.message, 409, null, payload.detail.code);
       }
-      throw new ScheduleApiError(validationMessage(payload.detail) ?? "A schedule with this name already exists in your account.", 409);
+      throw new ScheduleApiError(typeof payload.detail === "string" ? payload.detail : validationMessage(payload.detail) ?? "The request conflicts with the current account state.", 409);
     }
     if (response.status === 422 && isRecord(payload)) {
       if (isRecord(payload.detail) && typeof payload.detail.code === "string" && typeof payload.detail.message === "string") {
@@ -330,6 +330,15 @@ function isRouteLandmarks(value: unknown): value is RouteLandmarkEstimate[] {
 }
 
 export const scheduleApi = {
+  registerPushSubscription(subscription: { endpoint: string; keys: { p256dh: string; auth: string } }, token: string | null) {
+    return request<null>("/push/subscriptions", token, "POST", subscription);
+  },
+  removePushSubscription(endpoint: string, token: string | null) {
+    return request<null>("/push/subscriptions", token, "DELETE", { endpoint });
+  },
+  testPushNotification(token: string | null) {
+    return request<{ accepted: true }>("/push/test", token, "POST", undefined, (value): value is { accepted: true } => isRecord(value) && value.accepted === true);
+  },
   routeLandmarks(route_points: NonNullable<RouteAlternativeEstimate["geometry"]>, token: string | null) {
     return request<RouteLandmarkEstimate[]>("/schedules/route-landmarks", token, "POST", { route_points }, isRouteLandmarks);
   },
