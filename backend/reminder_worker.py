@@ -303,7 +303,13 @@ def run_worker(
 def main() -> None:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     poll = float(os.getenv("REMINDER_WORKER_POLL_SECONDS", "2"))
-    from push_service import WebPushDelivery
+    from push_service import PushConfigurationError, WebPushDelivery, validate_push_configuration
+
+    try:
+        validate_push_configuration()
+    except PushConfigurationError as exc:
+        logger.error("Reminder worker push configuration invalid: %s", exc)
+        raise SystemExit(2) from exc
 
     factory = get_session_factory()
     run_worker(factory, WebPushDelivery(factory), settings=WorkerSettings(poll_seconds=poll))

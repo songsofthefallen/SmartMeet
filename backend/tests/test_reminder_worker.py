@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import uuid
 import logging
 
+import pytest
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -276,3 +278,16 @@ def test_polling_error_is_logged_and_propagated(caplog, monkeypatch) -> None:
         raise AssertionError("unexpected poll error should propagate")
     assert "Reminder worker polling error error_type=ConnectionError" in caplog.text
     assert "private DB endpoint" not in caplog.text
+
+
+def test_worker_rejects_invalid_push_configuration_before_opening_database(monkeypatch) -> None:
+    monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("VAPID_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("VAPID_SUBJECT", raising=False)
+    monkeypatch.setattr("reminder_worker.get_session_factory", lambda: (_ for _ in ()).throw(AssertionError("database must not start")))
+
+    with pytest.raises(SystemExit) as error:
+        from reminder_worker import main
+        main()
+
+    assert error.value.code == 2

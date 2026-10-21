@@ -349,6 +349,8 @@ Generate a VAPID pair with the installed `vapid --gen` command. Set `VAPID_PUBLI
 
 Run the worker separately with `python -m reminder_worker` from `backend/`. The authenticated API accepts `POST /push/subscriptions` with a browser `PushSubscription.toJSON()` payload, `DELETE /push/subscriptions` with `{ "endpoint": "..." }`, and `POST /push/test` to send a one-off test notification to the signed-in user's registered endpoint(s).
 
+Before the worker begins polling or claiming reminders, it validates that the VAPID public/private keys match, the VAPID subject is a `mailto:` or HTTPS URI, and the subscription-encryption key is valid. A configuration error exits with a sanitized message, leaving queued reminders untouched. Incoming subscription encryption keys are shape-checked; malformed stored rows are skipped independently so they do not block other registered devices.
+
 For browser delivery, copy the backend's public `VAPID_PUBLIC_KEY` into the frontend `.env.local` as `NEXT_PUBLIC_VAPID_PUBLIC_KEY`; this is the only VAPID value exposed to browser code. Keep `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, and `PUSH_SUBSCRIPTION_ENCRYPTION_KEY` in `backend/.env`. Restart both servers after configuration and apply pending backend migrations. Visit the signed-in Dashboard over localhost or HTTPS, enable notifications, then use **Send test notification**. Verify permission-denied, unsupported-browser, disable, and notification-click behavior manually. The test button reports push-service acceptance, not confirmed device display. To verify worker delivery, create a future schedule with a wake/departure time and run the worker through that due instant (or use a disposable due reminder in a local test database).
 
 ## Browser notification verification (Spec 19)

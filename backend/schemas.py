@@ -1,6 +1,8 @@
 """Pydantic contracts for schedule data."""
 
 import math
+import base64
+import binascii
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Annotated
@@ -402,6 +404,28 @@ class PushSubscriptionKeys(BaseModel):
     model_config = ConfigDict(extra="forbid")
     p256dh: Annotated[str, StringConstraints(min_length=20, max_length=256)]
     auth: Annotated[str, StringConstraints(min_length=16, max_length=128)]
+
+    @field_validator("p256dh")
+    @classmethod
+    def validate_p256dh(cls, value: str) -> str:
+        try:
+            raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("p256dh must be a URL-safe base64 P-256 public key") from exc
+        if len(raw) != 65 or raw[0] != 4:
+            raise ValueError("p256dh must be an uncompressed P-256 public key")
+        return value
+
+    @field_validator("auth")
+    @classmethod
+    def validate_auth(cls, value: str) -> str:
+        try:
+            raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("auth must be URL-safe base64") from exc
+        if len(raw) != 16:
+            raise ValueError("auth must decode to 16 bytes")
+        return value
 
 
 class PushSubscriptionCreate(BaseModel):

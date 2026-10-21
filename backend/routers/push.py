@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from database import get_db
 from main import verify_clerk_token
-from push_service import WebPushDelivery, register_subscription, remove_subscription
+from push_service import PushConfigurationError, WebPushDelivery, register_subscription, remove_subscription
 from reminder_worker import PermanentProcessingError, RetryableProcessingError
 from schemas import PushSubscriptionCreate, PushSubscriptionDelete
 
@@ -22,6 +22,8 @@ def send_test_push(
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
     try:
         WebPushDelivery(factory).send_test(user_id)
+    except PushConfigurationError as exc:
+        raise HTTPException(status_code=503, detail="Push delivery is not configured correctly") from exc
     except RetryableProcessingError as exc:
         raise HTTPException(status_code=503, detail="Push service is temporarily unavailable") from exc
     except PermanentProcessingError as exc:

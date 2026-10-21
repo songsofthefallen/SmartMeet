@@ -6,6 +6,7 @@ import hashlib
 import base64
 import hmac
 import json
+import logging
 import os
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -19,6 +20,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from models import PushSubscription
 from reminder_worker import PermanentProcessingError, ReminderMessage, RetryableProcessingError
+from schemas import PushSubscriptionCreate
+
+logger = logging.getLogger("push_service")
+
+
+class PushConfigurationError(PermanentProcessingError):
+    """Required worker delivery configuration is missing or invalid."""
 
 
 def _fernet() -> Fernet:
@@ -54,6 +62,23 @@ def _vapid_private_key(value: str, public_key: str) -> str:
     if not hmac.compare_digest(derived_public, public_key.rstrip("=")):
         raise ValueError("VAPID public and private keys do not match")
     return normalized
+
+
+def validate_push_configuration() -> tuple[str, str, str]:
+    """Validate worker push settings before it can claim due reminders."""
+    private_key = os.getenv("VAPID_PRIVATE_KEY", "").replace("\\n", "\n")
+    public_key = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+    subject = os.getenv("VAPID_SUBJECT", "").strip()
+    if not private_key or not public_key or not subject:
+        raise PushConfigurationError("VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT are required")
+    if not (subject.startswith("mailto:") or subject.startswith("https://")):
+        raise PushConfigurationError("VAPID_SUBJECT must be a mailto or HTTPS URI")
+    try:
+        normalized_key = _vapid_private_key(private_key, public_key)
+        _fernet()
+    except Exception as exc:
+        raise PushConfigurationError("VAPID or subscription encryption configuration is invalid") from exc
+    return normalized_key, public_key, subject
 
 
 def _validate_endpoint(endpoint: str) -> None:
@@ -101,10 +126,17 @@ def _load_subscription(row: PushSubscription) -> dict:
         payload = json.loads(_fernet().decrypt(row.encrypted_subscription.encode("ascii")))
     except (InvalidToken, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PermanentProcessingError("stored push subscription is invalid") from exc
-    if not isinstance(payload, dict) or not isinstance(payload.get("keys"), dict):
+    try:
+        validated = PushSubscriptionCreate.model_validate(payload)
+    except Exception as exc:
         raise PermanentProcessingError("stored push subscription is invalid")
-    _validate_endpoint(payload.get("endpoint", ""))
-    return payload
+    try:
+        _validate_endpoint(validated.endpoint)
+    except ValueError as exc:
+        raise PermanentProcessingError("stored push subscription is invalid") from exc
+    if not hmac.compare_digest(_endpoint_hash(validated.endpoint), row.endpoint_hash):
+        raise PermanentProcessingError("stored push subscription is invalid")
+    return validated.model_dump()
 
 
 def _notification(message: ReminderMessage) -> dict[str, str]:
@@ -139,21 +171,25 @@ class WebPushDelivery:
         })
 
     def _send(self, user_id: str, notification: dict[str, str]) -> bool:
-        private_key = os.getenv("VAPID_PRIVATE_KEY", "").replace("\\n", "\n")
-        public_key = os.getenv("VAPID_PUBLIC_KEY", "")
-        subject = os.getenv("VAPID_SUBJECT", "")
-        if not private_key or not public_key or not subject:
-            raise PermanentProcessingError("VAPID configuration is incomplete")
         try:
-            private_key = _vapid_private_key(private_key, public_key)
-        except Exception as exc:
-            raise PermanentProcessingError("VAPID configuration is invalid") from exc
-
+            private_key, _public_key, subject = validate_push_configuration()
+        except PushConfigurationError:
+            raise
         with self.session_factory() as db:
             rows = list(db.scalars(select(PushSubscription).where(PushSubscription.clerk_user_id == user_id)))
-            subscriptions = [(row.id, _load_subscription(row)) for row in rows]
+        subscriptions: list[tuple[int, dict]] = []
+        invalid_count = 0
+        for row in rows:
+            try:
+                subscriptions.append((row.id, _load_subscription(row)))
+            except PermanentProcessingError:
+                # One damaged/obsolete row must not prevent delivery to other devices.
+                invalid_count += 1
+                logger.warning("push_subscription_invalid subscription_id=%d", row.id)
+        if invalid_count:
+            logger.warning("push_subscriptions_invalid count=%d", invalid_count)
         if not subscriptions:
-            raise PermanentProcessingError("no push subscriptions")
+            raise PermanentProcessingError("no valid push subscriptions")
 
         try:
             from pywebpush import WebPushException, webpush

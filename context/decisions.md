@@ -280,3 +280,8 @@
 - Decision: Keep a failed reminder failed while its schedule/type/UTC trigger identity is unchanged; an edit that creates a different trigger creates a distinct pending reminder. Preserve the existing lease worker's catch-up behavior: when it restarts, it processes overdue rows as soon as possible if the schedule is still active and its calculated trigger still matches. Schedule creation/edit still omits triggers already in the past.
 - Delivery limit: Catch-up is best effort and depends on the worker, active schedule, valid subscriptions, and push service. A provider acceptance is not proof of device display, and lease recovery cannot guarantee exactly-once sending.
 - Persistence: No schema or migration change.
+
+## DEC-047 - Validate push worker configuration before claiming reminders
+- Context: VAPID or subscription-encryption configuration errors discovered during delivery could make a reminder permanently fail, and one malformed encrypted subscription could abort delivery to every device for that user.
+- Decision: Validate worker VAPID key pairing, subject URI, and Fernet key before opening the worker loop. Reject malformed browser key material at API validation and skip malformed stored subscriptions independently, logging only a subscription ID and fixed diagnostic category. Keep push acceptance behavior unchanged.
+- Tradeoffs: A worker with incomplete push configuration exits until corrected; it does not consume attempts or fail queued reminders. Damaged subscriptions remain stored for diagnosis and are ignored until repaired or removed. No schema or migration change.

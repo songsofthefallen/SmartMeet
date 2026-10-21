@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
+import base64
 from collections.abc import Generator
 from datetime import datetime, timezone
 
@@ -18,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 from database import get_db
 from main import app, verify_clerk_token
 from models import Base, PushSubscription
-from push_service import WebPushDelivery, register_subscription, remove_subscription
+from push_service import PushConfigurationError, WebPushDelivery, register_subscription, remove_subscription, validate_push_configuration
 from reminder_worker import PermanentProcessingError, ReminderMessage, ReminderType, RetryableProcessingError
 
 
@@ -41,7 +43,13 @@ def push_db(monkeypatch: pytest.MonkeyPatch) -> Generator[sessionmaker[Session],
 
 
 def subscription(endpoint: str = "https://push.example.net/send/opaque-token") -> dict:
-    return {"endpoint": endpoint, "keys": {"p256dh": "B" * 65, "auth": "A" * 24}}
+    return {
+        "endpoint": endpoint,
+        "keys": {
+            "p256dh": base64.urlsafe_b64encode(b"\x04" + b"\x01" * 64).decode().rstrip("="),
+            "auth": base64.urlsafe_b64encode(b"\x02" * 16).decode().rstrip("="),
+        },
+    }
 
 
 def configure_vapid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,6 +132,55 @@ def test_subscription_endpoint_validates_https_and_rejects_local_addresses(push_
             register_subscription(db, "user_alpha", subscription("http://push.example.net/x"))
         with pytest.raises(ValueError):
             register_subscription(db, "user_alpha", subscription("https://127.0.0.1/x"))
+
+
+def test_subscription_registration_rejects_malformed_encryption_keys(push_db) -> None:
+    payload = subscription()
+    payload["keys"]["p256dh"] = "not-a-valid-key-value-!!!!!!!!!!!!!!!!"
+    response = TestClient(app).post("/push/subscriptions", json=payload)
+    assert response.status_code == 422
+
+
+def test_corrupt_subscription_does_not_block_a_valid_device(push_db, monkeypatch, caplog) -> None:
+    configure_vapid(monkeypatch)
+    with push_db() as db:
+        register_subscription(db, "user_alpha", subscription("https://push.example.net/send/good"))
+        register_subscription(db, "user_alpha", subscription("https://push.example.net/send/corrupt"))
+        db.commit()
+        corrupt = db.scalar(select(PushSubscription).order_by(PushSubscription.id.desc()))
+        assert corrupt is not None
+        from cryptography.fernet import Fernet
+        encryptor = Fernet(os.environ["PUSH_SUBSCRIPTION_ENCRYPTION_KEY"].encode())
+        corrupt.encrypted_subscription = encryptor.encrypt(json.dumps({"endpoint": "https://push.example.net/send/corrupt", "keys": {"p256dh": "broken", "auth": "broken"}}).encode()).decode()
+        db.commit()
+    sent = []
+
+    def fake_webpush(**kwargs):
+        sent.append(kwargs["subscription_info"]["endpoint"])
+        return types.SimpleNamespace(status_code=201)
+
+    monkeypatch.setitem(sys.modules, "pywebpush", types.SimpleNamespace(webpush=fake_webpush, WebPushException=type("WebPushException", (Exception,), {})))
+    message = ReminderMessage(10, 2, "user_alpha", ReminderType.DEPARTURE, datetime(2026, 10, 19, 1, tzinfo=timezone.utc), "Asia/Manila", 1)
+    assert WebPushDelivery(push_db)(message) is True
+    assert sent == ["https://push.example.net/send/good"]
+    assert "push_subscription_invalid" in caplog.text
+
+
+def test_push_configuration_validation_is_safe_and_explicit(monkeypatch) -> None:
+    monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("VAPID_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("VAPID_SUBJECT", raising=False)
+    with pytest.raises(PushConfigurationError, match="VAPID_PUBLIC_KEY"):
+        validate_push_configuration()
+
+
+def test_test_push_reports_configuration_error_as_service_unavailable(push_db, monkeypatch) -> None:
+    monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("VAPID_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("VAPID_SUBJECT", raising=False)
+    response = TestClient(app).post("/push/test")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Push delivery is not configured correctly"
 
 
 def test_delivery_sends_type_specific_payload_and_returns_on_provider_acceptance(push_db, monkeypatch) -> None:
