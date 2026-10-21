@@ -10,7 +10,7 @@
 - Verification: full backend pytest **306 passed**; focused push/worker tests **22 passed**; `npm run test:frontend`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, targeted Alembic SQL generation for revision `0012`, and `git diff --check` passed. `python -m compileall` passed. Full-history `alembic upgrade head --sql` cannot render because pre-existing revision `20261016_0009` queries existing rows during offline execution; targeted `0011 → 0012` generation succeeds. No live migration was applied.
 - Manual verification outstanding: apply the migration, configure real VAPID/encryption values, register a browser subscription after Spec 19's service worker exists, and confirm a real test notification. A provider 2xx confirms service acceptance, not display. Exactly-once delivery is not possible across a worker crash after provider acceptance and before DB confirmation. Partial multi-device delivery confirms on first acceptance; another device may miss that instance.
 
-### Spec 19 - Service Worker and Push Notification UI (active)
+### Completed Spec 19 - Service Worker and Push Notification UI
 
 - Implemented: added root-scoped `public/service-worker.js` push display and same-origin notification-click focus/navigation. Added Dashboard notification settings for unsupported, permission-denied, disabled, enabled, and error states; explicit permission request; browser subscription reuse/creation; authenticated API registration/removal; test notification; and partial disable failure messaging.
 - Reused `scheduleApi` request/auth handling and the Spec 18 endpoints (`POST /push/subscriptions`, `DELETE /push/subscriptions`, `POST /push/test`). The UI sends only `PushSubscription.toJSON()` endpoint/key fields. No backend, reminder logic, or schema changes.
@@ -18,6 +18,16 @@
 - Changed files: `public/service-worker.js`, `app/dashboard/notification-settings.tsx`, `app/dashboard/page.tsx`, `lib/schedule-api.ts`, `lib/push-api.test.ts`, `package.json`, `.env.example`, `backend/.env.example`, `README.md`, `context/decisions.md`, and this tracker.
 - Verification: backend pytest **306 passed** (run from `backend/`); `npm run test:frontend` passed (including 3 new push API contract tests); `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed. One initial backend invocation from the repository root failed collection because backend modules are imported relative to `backend/`; the documented backend-directory invocation passed. Build/tests mock API behavior only and do not verify push service or browser display.
 - Manual verification outstanding: apply pending Spec 18 migration, configure matching real VAPID keys, exercise permission grant/deny and subscription registration/removal in a supported browser, receive/click a real test push, and confirm worker reminder delivery. Automated API tests do not establish real push delivery or device display.
+
+### Active Spec 20 - Reminder Reliability
+
+- Inspection confirmed existing schedule create/edit/cancel reconciliation, UTC instants plus IANA timezone storage, uniqueness, MySQL `SKIP LOCKED` claims, expiring leases, bounded backoff, stale-schedule validation, encrypted multi-device subscriptions, and provider outcome mapping.
+- Fixed a reliability gap: routine synchronization no longer resets a permanent `FAILED` reminder when its schedule/type/trigger identity is unchanged. A changed trigger remains a distinct pending reminder. Sent rows remain sent; cancelled rows can be reactivated when the same schedule trigger becomes current again.
+- Documented overdue behavior: past instants are not newly queued on create/edit; reminders already queued are eligible for best-effort catch-up after worker downtime if the schedule is still active and the trigger remains current.
+- Added regressions for permanent failure preservation, changed-trigger scheduling, the two distinct UTC instants represented by the repeated fall-back DST wall time, and multi-device partial acceptance.
+- Migration status: no schema changes and no migration modified or applied. The configured MySQL database was not queried during this work; Spec 18's recorded database state had revision `20261019_0011` while `20261019_0012` remained pending.
+- Verification: backend pytest **309 passed** with one existing pytest cache-path warning; `npm run test:frontend`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed. Build completed successfully. Pytest's warning was `WinError 183` while writing the existing `.pytest_cache` nodeids file; it did not affect test execution.
+- Manual verification outstanding: confirm the configured MySQL migration revision and apply pending `20261019_0012` if appropriate; run the worker against configured VAPID credentials and valid subscriptions; exercise subscription expiry and multi-device behavior against actual push services; verify browser permission, display, and click behavior. Provider acceptance does not establish device display, and exactly-once delivery is not guaranteed.
 
 ### Completed Spec 17 - Reminder model and scheduling
 

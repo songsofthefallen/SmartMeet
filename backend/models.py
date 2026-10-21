@@ -117,7 +117,7 @@ class Schedule(Base):
 
 
 class Reminder(Base):
-    """Durable reminder queue entry; delivery is handled by a future provider."""
+    """Durable queue entry for scheduled wake and departure notifications."""
 
     __tablename__ = "reminders"
     __table_args__ = (

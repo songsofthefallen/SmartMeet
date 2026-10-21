@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -72,3 +73,58 @@ def test_sent_reminder_is_never_requeued_for_same_trigger() -> None:
         sync_schedule_reminders(schedule, session, now)
         assert wake.status == ReminderStatus.SENT
         assert session.scalar(select(Reminder).where(Reminder.reminder_type == ReminderType.WAKE)) is wake
+
+
+def test_failed_reminder_stays_failed_on_unrelated_sync_but_new_trigger_is_scheduled() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    with Session(engine) as session:
+        schedule = _schedule(session)
+        sync_schedule_reminders(schedule, session, now)
+        session.flush()
+        wake = session.scalar(select(Reminder).where(Reminder.reminder_type == ReminderType.WAKE))
+        assert wake is not None
+        wake.status = ReminderStatus.FAILED
+        wake.last_error = "PermanentProcessingError:processing_failed"
+
+        # An unrelated title/edit sync must not restart a permanent failure.
+        schedule.title = "Renamed trip"
+        sync_schedule_reminders(schedule, session, now)
+        assert wake.status == ReminderStatus.FAILED
+        assert wake.last_error == "PermanentProcessingError:processing_failed"
+
+        # A genuinely changed trigger is a distinct reminder and is eligible.
+        schedule.calculated_wake_time += timedelta(minutes=5)
+        sync_schedule_reminders(schedule, session, now)
+        session.flush()
+        rows = list(session.scalars(select(Reminder).where(Reminder.reminder_type == ReminderType.WAKE)))
+        assert sum(row.status == ReminderStatus.FAILED for row in rows) == 1
+        assert sum(row.status == ReminderStatus.PENDING for row in rows) == 1
+
+
+def test_fall_back_dst_repeated_wall_clock_keeps_distinct_utc_triggers() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 10, 31, tzinfo=timezone.utc)
+    eastern = ZoneInfo("America/New_York")
+    first_130 = datetime(2026, 11, 1, 1, 30, tzinfo=eastern, fold=0)
+    second_130 = datetime(2026, 11, 1, 1, 30, tzinfo=eastern, fold=1)
+    with Session(engine) as session:
+        schedule = _schedule(session)
+        schedule.timezone = "America/New_York"
+        schedule.calculated_departure_time = first_130
+        schedule.calculated_wake_time = first_130 - timedelta(minutes=30)
+        sync_schedule_reminders(schedule, session, now)
+        session.flush()
+
+        schedule.calculated_departure_time = second_130
+        schedule.calculated_wake_time = second_130 - timedelta(minutes=30)
+        sync_schedule_reminders(schedule, session, now)
+        session.flush()
+        departures = list(session.scalars(select(Reminder).where(Reminder.reminder_type == ReminderType.DEPARTURE)))
+        assert len(departures) == 2
+        assert {row.status for row in departures} == {ReminderStatus.CANCELLED, ReminderStatus.PENDING}
+        utc_instants = {row.scheduled_for.replace(tzinfo=timezone.utc) for row in departures}
+        assert len(utc_instants) == 2
+        assert utc_instants == {first_130.astimezone(timezone.utc), second_130.astimezone(timezone.utc)}

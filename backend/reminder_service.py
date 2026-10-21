@@ -47,7 +47,7 @@ def sync_schedule_reminders(schedule: Schedule, db: Session, now: datetime | Non
                 timezone=schedule.timezone,
                 status=ReminderStatus.PENDING,
             ))
-        elif row.status in (ReminderStatus.PENDING, ReminderStatus.CANCELLED, ReminderStatus.FAILED):
+        elif row.status in (ReminderStatus.PENDING, ReminderStatus.CANCELLED):
             row.status = ReminderStatus.PENDING
             row.timezone = schedule.timezone
             row.last_error = None

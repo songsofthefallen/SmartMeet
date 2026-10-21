@@ -147,6 +147,30 @@ def test_delivery_sends_type_specific_payload_and_returns_on_provider_acceptance
     assert captured["timeout"] == 10
 
 
+def test_delivery_confirms_after_one_device_accepts_even_if_another_is_temporarily_unavailable(push_db, monkeypatch) -> None:
+    configure_vapid(monkeypatch)
+    with push_db() as db:
+        register_subscription(db, "user_alpha", subscription("https://push.example.net/send/first"))
+        register_subscription(db, "user_alpha", subscription("https://push.example.net/send/second"))
+        db.commit()
+    calls = []
+    retryable_error = type("WebPushException", (Exception,), {"status_code": 503})
+
+    def accept_then_fail(**kwargs):
+        calls.append(kwargs["subscription_info"]["endpoint"])
+        if calls[-1].endswith("second"):
+            raise retryable_error("provider response must not be logged")
+        return types.SimpleNamespace(status_code=201)
+
+    monkeypatch.setitem(sys.modules, "pywebpush", types.SimpleNamespace(
+        webpush=accept_then_fail,
+        WebPushException=retryable_error,
+    ))
+    message = ReminderMessage(9, 2, "user_alpha", ReminderType.DEPARTURE, datetime(2026, 10, 19, 1, tzinfo=timezone.utc), "Asia/Manila", 1)
+    assert WebPushDelivery(push_db)(message) is True
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize("status_code,expected", [(410, "permanent"), (429, "retry"), (503, "retry"), (403, "permanent")])
 def test_delivery_maps_provider_failure_classes(push_db, monkeypatch, status_code: int, expected: str) -> None:
     configure_vapid(monkeypatch)

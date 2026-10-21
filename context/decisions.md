@@ -274,3 +274,9 @@
 - Decision: The signed-in Dashboard registers `/service-worker.js`, requests notification permission only after the user selects Enable, reuses an existing browser subscription when possible, and registers its `toJSON()` payload through the existing authenticated API utility. Disable removes the backend endpoint and browser subscription with explicit partial-failure feedback. Push payloads display through the worker and notification clicks focus/navigate to same-origin `/schedules`.
 - Configuration: expose only `VAPID_PUBLIC_KEY` as frontend `NEXT_PUBLIC_VAPID_PUBLIC_KEY`; private VAPID and subscription-encryption keys remain in backend configuration.
 - Tradeoffs: browser permission, subscription availability, push-service acceptance, and device display remain outside the application's guarantees. No reminder scheduling or schema changes are introduced.
+
+## DEC-046 - Preserve permanent reminder failures and catch up overdue triggers
+- Context: Reminder reconciliation runs for ordinary schedule edits as well as timing changes, and a standalone worker may be offline when an already scheduled instant passes.
+- Decision: Keep a failed reminder failed while its schedule/type/UTC trigger identity is unchanged; an edit that creates a different trigger creates a distinct pending reminder. Preserve the existing lease worker's catch-up behavior: when it restarts, it processes overdue rows as soon as possible if the schedule is still active and its calculated trigger still matches. Schedule creation/edit still omits triggers already in the past.
+- Delivery limit: Catch-up is best effort and depends on the worker, active schedule, valid subscriptions, and push service. A provider acceptance is not proof of device display, and lease recovery cannot guarantee exactly-once sending.
+- Persistence: No schema or migration change.
