@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "test:frontend": "node lib/traffic-display.test.js && node lib/suggested-times.test.js && node lib/schedule-order.test.js && node lib/schedule-warning-display.test.js && node lib/location-selection.test.js && node --experimental-strip-types lib/schedule-api.test.ts && node --experimental-strip-types lib/assistant-autosave.test.ts && node --experimental-strip-types lib/clarification-messages.test.ts && node --experimental-strip-types lib/push-api.test.ts",
+    "test:e2e": "playwright test",
     "start": "next start",
     "lint": "eslint"
   },
@@ -16,6 +17,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

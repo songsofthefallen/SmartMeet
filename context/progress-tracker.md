@@ -1,5 +1,13 @@
 ## Current Progress
 
+### Playwright exploratory testing preparation
+
+- Inspected the existing project structure, package scripts, frontend and backend environment examples, tests, and repository-local Clerk testing guidance. No Playwright package or browser test configuration existed.
+- Added `@playwright/test`, the `test:e2e` npm script, and `playwright.config.ts` for Chromium with the Next.js development server, `data-testid` selectors, failure screenshots, retained failure traces, HTML reporting, and ignored output directories.
+- Added `e2e/README.md` with safe test-account and disposable-data guidance. No authenticated setup or application functionality was changed.
+- Verification completed: dependency installation succeeded, the package lock was updated, Chromium was installed locally, and `npx tsc --noEmit` passed. `npx playwright test --list` loaded the configuration but reported zero tests, as expected because no exploratory spec exists yet. No browser test was run because no safe Clerk test account was provided.
+- Manual setup before authenticated browser testing: configure working development values in root `.env.local` and `backend/.env`, apply the required backend migrations, start FastAPI on port 8000, install Chromium, and use a dedicated Clerk development-instance account. Auth storage state should be generated later under ignored `e2e/.auth/`.
+
 ### Completed Spec 18 - Web Push Backend Delivery
 
 - Implemented: authenticated subscription registration/removal and `POST /push/test`, encrypted subscription payload storage keyed by endpoint hash, VAPID delivery service, wake/departure notification payloads, and worker wiring through `WebPushDelivery`.

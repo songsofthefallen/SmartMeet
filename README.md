@@ -306,6 +306,33 @@ npm run build
 
 If a script such as `npm test` is not defined in `package.json`, use the project's actual test command instead.
 
+### Playwright exploratory browser testing
+
+Playwright Test is configured for Chromium in `playwright.config.ts`. The configuration starts or reuses the Next.js development server at `http://localhost:3000`, uses `data-testid` as the test-id attribute, saves HTML reports under `playwright-report/`, and keeps screenshots and traces for failed tests under `test-results/`.
+
+Install the browser binary once after installing dependencies:
+
+```powershell
+npx playwright install chromium
+```
+
+Run exploratory tests from the repository root:
+
+```powershell
+npm run test:e2e
+npm run test:e2e -- --headed
+npx playwright show-report
+```
+
+The Playwright web server starts only the frontend. Start the FastAPI backend separately first:
+
+```powershell
+cd backend
+python -m uvicorn main:app --reload --port 8000
+```
+
+Before testing authenticated flows, configure the frontend and backend development environment files and use a dedicated Clerk development-instance test account. Do not use production credentials or commit authenticated storage state. Use disposable schedule data and clean it up after exploration. The current configuration does not create a Clerk account or generate auth state automatically.
+
 ## Troubleshooting
 
 | Problem | What to check |
