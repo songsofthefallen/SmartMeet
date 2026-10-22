@@ -92,3 +92,17 @@ def test_health_remains_public() -> None:
     response = TestClient(app).get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_requests_receive_safe_correlation_id_and_preserve_valid_one() -> None:
+    client = TestClient(app)
+    generated = client.get("/health")
+    assert generated.status_code == 200
+    assert generated.headers["X-Request-ID"]
+    assert len(generated.headers["X-Request-ID"]) == 32
+
+    supplied = client.get("/health", headers={"X-Request-ID": "test-correlation-1"})
+    assert supplied.headers["X-Request-ID"] == "test-correlation-1"
+
+    invalid = client.get("/health", headers={"X-Request-ID": "not safe\nvalue"})
+    assert invalid.headers["X-Request-ID"] != "not safe\nvalue"

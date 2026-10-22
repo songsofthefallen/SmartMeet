@@ -1,0 +1,277 @@
+[
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  },
+  {
+    "reload": 1,
+    "samples": [
+      {
+        "ms": 0,
+        "status": "Checking backend…"
+      },
+      {
+        "ms": 50,
+        "status": "Checking backend…"
+      },
+      {
+        "ms": 250,
+        "status": "Backend connected"
+      },
+      {
+        "ms": 1000,
+        "status": "Backend connected"
+      }
+    ]
+  },
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  },
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  },
+  {
+    "reload": 2,
+    "samples": [
+      {
+        "ms": 0,
+        "status": "Checking backend…"
+      },
+      {
+        "ms": 50,
+        "status": "Backend connected"
+      },
+      {
+        "ms": 250,
+        "status": "Backend connected"
+      },
+      {
+        "ms": 1000,
+        "status": "Backend connected"
+      }
+    ]
+  },
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  },
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  },
+  {
+    "reload": 3,
+    "samples": [
+      {
+        "ms": 0,
+        "status": "Checking backend…"
+      },
+      {
+        "ms": 50,
+        "status": "Backend connected"
+      },
+      {
+        "ms": 250,
+        "status": "Backend connected"
+      },
+      {
+        "ms": 1000,
+        "status": "Backend connected"
+      }
+    ]
+  },
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  },
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  },
+  {
+    "reload": 4,
+    "samples": [
+      {
+        "ms": 0,
+        "status": "Checking backend…"
+      },
+      {
+        "ms": 50,
+        "status": "Checking backend…"
+      },
+      {
+        "ms": 250,
+        "status": "Backend connected"
+      },
+      {
+        "ms": 1000,
+        "status": "Backend connected"
+      }
+    ]
+  },
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  },
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  },
+  {
+    "reload": 5,
+    "samples": [
+      {
+        "ms": 0,
+        "status": "Checking backend…"
+      },
+      {
+        "ms": 50,
+        "status": "Checking backend…"
+      },
+      {
+        "ms": 250,
+        "status": "Backend connected"
+      },
+      {
+        "ms": 1000,
+        "status": "Backend connected"
+      }
+    ]
+  },
+  {
+    "type": "console",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold"
+  },
+  {
+    "type": "console",
+    "text": "[HMR] connected"
+  },
+  {
+    "type": "requestfailed",
+    "url": "http://localhost:8000/health",
+    "failure": "net::ERR_ABORTED"
+  },
+  {
+    "type": "console",
+    "text": "Clerk: Clerk has been loaded with development keys. Development instances have strict usage limits and should not be used when deploying your application to production. Learn more: https://clerk.com/docs/deployments/overview"
+  }
+]

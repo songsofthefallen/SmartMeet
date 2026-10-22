@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import ai_provider
 from ai_provider import (
     AIConfigurationError,
+    AI_TIMEOUT,
     AIProviderError,
     AISettings,
     DEFAULT_AI_BASE_URL,
@@ -180,6 +181,29 @@ def test_client_maps_timeouts_to_safe_provider_error() -> None:
         with pytest.raises(AIProviderError, match="timed out") as error:
             OpenRouterClient(settings(), http_client=http).complete_structured([], Extracted)
     assert "private details" not in str(error.value)
+
+
+def test_default_timeout_is_explicit_per_phase() -> None:
+    assert AI_TIMEOUT.connect == 5.0
+    assert AI_TIMEOUT.read == 30.0
+    assert AI_TIMEOUT.write == 10.0
+    assert AI_TIMEOUT.pool == 5.0
+
+
+def test_client_does_not_fallback_on_unrelated_bad_request() -> None:
+    calls = 0
+
+    def provider_error(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(400, json={"error": {"message": "invalid model input"}})
+
+    with httpx.Client(transport=httpx.MockTransport(provider_error)) as http:
+        with pytest.raises(AIProviderError) as error:
+            OpenRouterClient(settings(), http_client=http).complete_structured([], Extracted)
+
+    assert calls == 1
+    assert error.value.category == "provider_error"
 
 
 @pytest.mark.parametrize(

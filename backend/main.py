@@ -1,10 +1,15 @@
 import os
+from collections.abc import Callable
 from typing import Annotated
 
 import jwt
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from jwt import InvalidTokenError
+from starlette.requests import Request
+from starlette.responses import Response
+
+from observability import new_request_id, reset_request_id, set_request_id
 
 
 def configured_origins() -> list[str]:
@@ -20,6 +25,19 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Accept", "Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def correlate_requests(request: Request, call_next: Callable[[Request], Response]) -> Response:
+    supplied = request.headers.get("X-Request-ID", "").strip()
+    request_id = supplied if supplied and len(supplied) <= 64 and all(character.isalnum() or character in "-_." for character in supplied) else new_request_id()
+    token = set_request_id(request_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        reset_request_id(token)
 
 
 @app.get("/health")

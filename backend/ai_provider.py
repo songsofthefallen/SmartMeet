@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+import logging
 from pathlib import Path
+from time import perf_counter
 from typing import Any, TypeVar
 
 import httpx
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
+from observability import log_provider_event
+
 T = TypeVar("T", bound=BaseModel)
 BACKEND_ENV_PATH = Path(__file__).resolve().with_name(".env")
 DEFAULT_AI_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_AI_MODEL = "openrouter/free"
+AI_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
+logger = logging.getLogger(__name__)
 
 
 class AIConfigurationError(RuntimeError):
@@ -88,10 +94,10 @@ class OpenRouterClient:
         settings: AISettings | None = None,
         *,
         http_client: httpx.Client | None = None,
-        timeout_seconds: float = 30.0,
+        timeout: httpx.Timeout | None = None,
     ) -> None:
         self.settings = settings or load_ai_settings()
-        self._client = http_client or httpx.Client(timeout=timeout_seconds)
+        self._client = http_client or httpx.Client(timeout=timeout or AI_TIMEOUT)
         self._owns_client = http_client is None
 
     def close(self) -> None:
@@ -109,7 +115,12 @@ class OpenRouterClient:
         messages: list[dict[str, str]],
         response_model: type[T],
     ) -> T:
-        """Request structured chat output, degrading format hints when unsupported."""
+        """Request structured output with a bounded compatibility fallback.
+
+        The fallback only follows explicit 400/422 format-capability errors. It
+        can issue up to three provider requests for one extraction when both
+        structured modes are rejected; it is not a general retry.
+        """
         schema_format = {
             "type": "json_schema",
             "json_schema": {
@@ -167,8 +178,9 @@ class OpenRouterClient:
         body: dict[str, Any] = {"model": self.settings.model, "messages": messages}
         if response_format is not None:
             body["response_format"] = response_format
+        started = perf_counter()
         try:
-            return self._client.post(
+            response = self._client.post(
                 f"{self.settings.base_url}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {self.settings.api_key}",
@@ -176,13 +188,24 @@ class OpenRouterClient:
                 },
                 json=body,
             )
+            log_provider_event(
+                logger,
+                provider="openrouter",
+                operation="chat_completion",
+                elapsed_ms=round((perf_counter() - started) * 1000),
+                category="success" if response.status_code < 400 else "provider_error",
+                upstream_status=response.status_code,
+            )
+            return response
         except httpx.TimeoutException as exc:
+            log_provider_event(logger, provider="openrouter", operation="chat_completion", elapsed_ms=round((perf_counter() - started) * 1000), category="timeout", exception_class=type(exc).__name__, level=logging.WARNING)
             raise AIProviderError(
                 "OpenRouter request timed out",
                 category="timeout",
                 exception_class=type(exc).__name__,
             ) from exc
         except httpx.HTTPError as exc:
+            log_provider_event(logger, provider="openrouter", operation="chat_completion", elapsed_ms=round((perf_counter() - started) * 1000), category="transport_error", exception_class=type(exc).__name__, level=logging.WARNING)
             raise AIProviderError(
                 "OpenRouter request could not be completed",
                 category="transport_error",

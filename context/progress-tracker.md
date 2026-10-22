@@ -1,5 +1,19 @@
 ## Current Progress
 
+### External provider reliability improvements
+
+- Added request correlation middleware with safe `X-Request-ID` response propagation and sanitized provider diagnostics for OpenRouter, Open-Meteo, and TomTom. Logs include provider, operation, elapsed milliseconds, category, exception class, upstream status when available, and correlation ID; they do not include secrets, prompts, authorization headers, or location payloads.
+- Replaced scalar provider timeouts with explicit connect/read/write/pool values while preserving existing read limits: OpenRouter 5/30/10/5 seconds, Open-Meteo 2/4/2/2, TomTom search/landmarks 2/5/2/2, route 3/35/5/5, and reverse geocode 1/2/1/2.
+- Added `AbortSignal` support to the schedule API helper. Intentional aborts map to a typed cancellation error, workspace requests are aborted on unmount, and load, route, location, extraction, detail, and refresh results are guarded against stale updates. OpenRouter structured-output fallback remains limited to explicit format-capability 400/422 responses and is documented as potentially issuing up to three requests only when necessary.
+- Added regression tests for explicit timeout phases, request correlation, cancellation, unrelated OpenRouter 400 behavior, and existing provider timeout/error/fallback paths. No database schema or live provider calls were made.
+- Verification: full backend pytest **317 passed**, frontend tests passed, `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed. Direct frontend TypeScript tests retain the existing Node module-type performance warnings. Load testing, live provider recovery, and server-side cancellation after client disconnect remain unverified.
+
+### Backend status cancellation handling
+
+- Fixed the confirmed status flicker in `app/backend-status.tsx`. Aborted/cancelled health requests now produce no status result, unmounted components cannot update state, and request-generation checks prevent stale health results from overwriting newer results.
+- Added `lib/backend-status.ts` and `lib/backend-status.test.ts` covering successful health responses, genuine HTTP/body failures, DOM abort errors, and cancellation signaled through `AbortSignal`. Added the test to `npm run test:frontend`.
+- Verification: `npm run test:frontend`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed. Existing Node module-type performance warnings remain during direct TypeScript test execution. Exploratory evidence remains under `artifacts/exploratory-testing/`; no branding or unrelated feature changes were made.
+
 ### Playwright exploratory testing preparation
 
 - Inspected the existing project structure, package scripts, frontend and backend environment examples, tests, and repository-local Clerk testing guidance. No Playwright package or browser test configuration existed.

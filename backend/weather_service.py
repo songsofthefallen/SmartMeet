@@ -1,16 +1,21 @@
 """Open-Meteo forecast adapter and deterministic route weather assessment."""
 
 import math
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from typing import Literal
 
 import httpx
 from pydantic import ValidationError
 
+from observability import log_provider_event
 from schemas import LocationSelection, WeatherAdvisory, WeatherAssessmentDiagnostic, WeatherEstimate
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_TIMEOUT = httpx.Timeout(connect=2.0, read=4.0, write=2.0, pool=2.0)
+logger = logging.getLogger(__name__)
 WMO_WEATHER_CONDITIONS = {
     0: "Clear sky",
     1: "Mainly clear",
@@ -108,15 +113,19 @@ class OpenMeteoWeatherService:
             "forecast_days": 16,
             "timezone": "UTC",
         }
+        started = perf_counter()
         try:
-            response = self.client.get(OPEN_METEO_URL, params=params, timeout=4.0) if self.client else httpx.get(OPEN_METEO_URL, params=params, timeout=4.0)
+            response = self.client.get(OPEN_METEO_URL, params=params, timeout=OPEN_METEO_TIMEOUT) if self.client else httpx.get(OPEN_METEO_URL, params=params, timeout=OPEN_METEO_TIMEOUT)
         except httpx.TimeoutException as exc:
+            log_provider_event(logger, provider="open-meteo", operation="forecast", elapsed_ms=round((perf_counter() - started) * 1000), category="timeout", exception_class=type(exc).__name__, level=logging.WARNING)
             raise WeatherProviderError("provider_timeout", requested_hour, point) from exc
         except httpx.HTTPError as exc:
+            log_provider_event(logger, provider="open-meteo", operation="forecast", elapsed_ms=round((perf_counter() - started) * 1000), category="transport_error", exception_class=type(exc).__name__, level=logging.WARNING)
             raise WeatherProviderError("provider_request_failure", requested_hour, point) from exc
         try:
             response.raise_for_status()
         except httpx.HTTPError as exc:
+            log_provider_event(logger, provider="open-meteo", operation="forecast", elapsed_ms=round((perf_counter() - started) * 1000), category="provider_error", upstream_status=getattr(response, "status_code", None), exception_class=type(exc).__name__, level=logging.WARNING)
             raise WeatherProviderError("provider_request_failure", requested_hour, point) from exc
         try:
             body = response.json()

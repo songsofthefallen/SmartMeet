@@ -510,7 +510,7 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
         def json(self) -> dict[str, object]:
             return {"routes": [{"summary": {"travelTimeInSeconds": 161, "trafficDelayInSeconds": 15, "noTrafficTravelTimeInSeconds": 120, "historicTrafficTravelTimeInSeconds": 157, "liveTrafficIncidentsTravelTimeInSeconds": 161}, "legs": [{"points": [{"latitude": 14.5, "longitude": 121.0}, {"latitude": 14.55, "longitude": 121.05}, {"latitude": 14.6, "longitude": 121.1}]}], "sections": [{"sectionType": "TRAFFIC", "delayInSeconds": 301, "startPointIndex": 0, "endPointIndex": 2, "simpleCategory": "JAM"}, {"sectionType": "TRAFFIC", "delayInSeconds": 900, "startPointIndex": 3, "endPointIndex": 4}, {"sectionType": "IMPORTANT_ROAD_STRETCH", "startPointIndex": 1, "endPointIndex": 2, "streetName": {"text": "Verified Road"}, "roadNumbers": [{"text": "A10"}]}, {"sectionType": "COUNTRY", "delayInSeconds": 999}]}]}
 
-    def fake_get(url: str, *, params: dict[str, object], timeout: float) -> Response:
+    def fake_get(url: str, *, params: dict[str, object], timeout: httpx.Timeout) -> Response:
         assert url.endswith("/14.5,121.0:14.6,121.1/json")
         assert params["key"] == "test-server-key"
         assert params["traffic"] == "true"
@@ -519,7 +519,7 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
         assert params["routeRepresentation"] == "polyline"
         assert params["maxAlternatives"] == "5"
         assert "departAt" not in params and "arriveAt" not in params
-        assert timeout == 35.0
+        assert timeout.connect == 3.0 and timeout.read == 35.0 and timeout.write == 5.0 and timeout.pool == 5.0
         return Response()
 
     monkeypatch.setattr("routing_service.httpx.get", fake_get)
@@ -841,14 +841,14 @@ def test_reverse_geocoder_caches_empty_results_and_timeouts_without_raising(monk
     assert calls == 2
     with _reverse_geocode_cache_lock:
         _reverse_geocode_cache.clear()
-    calls: list[tuple[str, dict[str, object], float]] = []
+    calls: list[tuple[str, dict[str, object], httpx.Timeout]] = []
 
     class Response:
         def raise_for_status(self) -> None: pass
         def json(self) -> dict[str, object]:
             return {"addresses": [{"address": {"streetName": "Ortigas Avenue", "streetNumber": "42"}}]}
 
-    def fake_get(url: str, *, params: dict[str, object], timeout: float) -> Response:
+    def fake_get(url: str, *, params: dict[str, object], timeout: httpx.Timeout) -> Response:
         calls.append((url, params, timeout))
         return Response()
 
@@ -863,7 +863,7 @@ def test_reverse_geocoder_caches_empty_results_and_timeouts_without_raising(monk
     assert url.endswith("/14.582,121.0579.json")
     assert params["key"] == "test-server-key"
     assert params["radius"] == "50"
-    assert timeout <= 2.0
+    assert timeout.connect == 1.0 and timeout.read == 2.0 and timeout.write == 1.0 and timeout.pool == 2.0
     with _reverse_geocode_cache_lock:
         _reverse_geocode_cache.clear()
 
@@ -995,7 +995,9 @@ def test_tomtom_routing_maps_timeout_to_provider_error(monkeypatch: pytest.Monke
     with pytest.raises(RoutingProviderError) as error:
         TomTomRoutingService(api_key="test-server-key").estimate(LocationSelection(name="A", latitude=1, longitude=2), LocationSelection(name="B", latitude=3, longitude=4))
     assert error.value.reason == "timeout"
-    assert captured["timeout"] == 35.0
+    timeout = captured["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect == 3.0 and timeout.read == 35.0 and timeout.write == 5.0 and timeout.pool == 5.0
 
 
 @pytest.mark.parametrize(("code", "reason"), [("COMPUTE_TIME_LIMIT_EXCEEDED", "compute_limit"), ("SOME_PRIVATE_CODE", "provider_error")])

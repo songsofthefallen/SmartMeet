@@ -10,6 +10,7 @@ import { formatTrafficDelay, groupTrafficSections, routeTimeBasisLabel, trafficI
 import { arrivalPreparationNote, suggestedTimeRows } from "@/lib/suggested-times.js";
 import { upsertScheduleNewestFirst } from "@/lib/schedule-order.js";
 import { shouldInvalidateLocationSelection } from "@/lib/location-selection.js";
+import { isCurrentGeneration } from "@/lib/request-generation";
 import { historicalEstimateNotice, PAST_SCHEDULE_BANNER_TITLE, showPastScheduleNotices, showPostDepartureRouteWarning, showStaleEstimateWarning, showTravelTrafficCard } from "@/lib/schedule-warning-display.js";
 import { RouteComparisonMap } from "./route-comparison-map";
 
@@ -108,6 +109,10 @@ function messageFor(error: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
+function isCancellation(error: unknown): boolean {
+  return error instanceof ScheduleApiError && error.code === "cancelled";
+}
+
 export default function ScheduleWorkspace() {
   const { getToken, isLoaded } = useAuth();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -152,6 +157,21 @@ export default function ScheduleWorkspace() {
   const [routeOptionsError, setRouteOptionsError] = useState<string | null>(null);
   const [routeSearchVersion, setRouteSearchVersion] = useState(0);
   const routeOptionsGeneration = useRef(0);
+  const locationSearchGeneration = useRef(0);
+  const originSearchGeneration = useRef(0);
+  const loadGeneration = useRef(0);
+  const mounted = useRef(true);
+  const activeControllers = useRef(new Set<AbortController>());
+
+  useEffect(() => {
+    mounted.current = true;
+    const controllers = activeControllers.current;
+    return () => {
+      mounted.current = false;
+      controllers.forEach((controller) => controller.abort());
+      controllers.clear();
+    };
+  }, []);
 
   const activeSchedules = useMemo(
     () => schedules.filter((item) => item.status === "active"),
@@ -159,9 +179,13 @@ export default function ScheduleWorkspace() {
   );
 
   const loadSchedules = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
     try {
       const token = await getToken();
-      const items = await scheduleApi.list(token);
+      const items = await scheduleApi.list(token, { signal: controller.signal });
+      if (!mounted.current || !isCurrentGeneration(generation, loadGeneration.current)) return;
       setLoadError(false);
       setSchedules(items);
       const first = items.find((item) => item.status === "active") ?? items[0] ?? null;
@@ -169,10 +193,12 @@ export default function ScheduleWorkspace() {
       setSelectedSchedule(first);
       setView(first ? "detail" : "list");
     } catch (error) {
+      if (!mounted.current || !isCurrentGeneration(generation, loadGeneration.current) || isCancellation(error)) return;
       setLoadError(true);
       setMessage({ kind: "error", text: messageFor(error) });
     } finally {
-      setLoading(false);
+      activeControllers.current.delete(controller);
+      if (mounted.current && isCurrentGeneration(generation, loadGeneration.current)) setLoading(false);
     }
   }, [getToken]);
 
@@ -245,7 +271,11 @@ export default function ScheduleWorkspace() {
       return () => window.clearTimeout(restoreTimer);
     }
     const generation = ++routeOptionsGeneration.current;
+    let controller: AbortController | null = null;
     const timer = window.setTimeout(() => {
+      const requestController = new AbortController();
+      controller = requestController;
+      activeControllers.current.add(requestController);
       setRouteOptions(null);
       setRouteOptionsLoading(true);
       setRouteOptionsError(null);
@@ -254,22 +284,25 @@ export default function ScheduleWorkspace() {
         location: form.location!,
         time_intent: form.time_intent as ScheduleIntent,
         target_datetime: targetDatetime,
-      }, token)).then((result) => {
-        if (generation !== routeOptionsGeneration.current) return;
+      }, token, { signal: requestController.signal })).then((result) => {
+        if (!isCurrentGeneration(generation, routeOptionsGeneration.current)) return;
         setRouteOptions(result.alternatives);
         setSelectedRouteId((current) => result.alternatives.some((route) => route.route_id === current)
           ? current
           : result.alternatives[0]?.route_id ?? null);
       }).catch((error: unknown) => {
-        if (generation !== routeOptionsGeneration.current) return;
+        if (!isCurrentGeneration(generation, routeOptionsGeneration.current)) return;
+        if (isCancellation(error)) return;
         setRouteOptionsError(messageFor(error));
       }).finally(() => {
-        if (generation === routeOptionsGeneration.current) setRouteOptionsLoading(false);
+        activeControllers.current.delete(requestController);
+        if (isCurrentGeneration(generation, routeOptionsGeneration.current)) setRouteOptionsLoading(false);
       });
     }, 350);
     return () => {
       window.clearTimeout(timer);
       routeOptionsGeneration.current += 1;
+      controller?.abort();
     };
   }, [view, editingId, selectedSchedule, form.origin_location, form.location, form.target_datetime, form.time_intent, form.timezone, getToken, routeSearchVersion]);
 
@@ -337,37 +370,53 @@ export default function ScheduleWorkspace() {
 
   async function searchLocations() {
     if (locationSearching || locationQuery.trim().length < 2) return;
+    const generation = ++locationSearchGeneration.current;
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
     setLocationSearching(true);
     setLocationResults([]);
     setMessage(null);
     try {
       const token = await getToken();
-      const response = await scheduleApi.searchLocations(locationQuery.trim(), token);
+      const response = await scheduleApi.searchLocations(locationQuery.trim(), token, { signal: controller.signal });
+      if (!mounted.current || !isCurrentGeneration(generation, locationSearchGeneration.current)) return;
       setLocationResults(response.results);
       if (response.results.length === 0) setMessage({ kind: "error", text: "No matching locations found. Try a nearby town or a more specific name." });
     } catch (error) {
+      if (!mounted.current || !isCurrentGeneration(generation, locationSearchGeneration.current) || isCancellation(error)) return;
       setMessage({ kind: "error", text: messageFor(error) });
     } finally {
-      setLocationSearching(false);
+      activeControllers.current.delete(controller);
+      if (mounted.current && isCurrentGeneration(generation, locationSearchGeneration.current)) setLocationSearching(false);
     }
   }
 
   async function searchOriginLocations() {
     if (originSearching || originQuery.trim().length < 2) return;
+    const generation = ++originSearchGeneration.current;
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
     setOriginSearching(true);
     setOriginResults([]);
     try {
       const token = await getToken();
-      const response = await scheduleApi.searchLocations(originQuery.trim(), token);
+      const response = await scheduleApi.searchLocations(originQuery.trim(), token, { signal: controller.signal });
+      if (!mounted.current || !isCurrentGeneration(generation, originSearchGeneration.current)) return;
       setOriginResults(response.results);
       if (response.results.length === 0) setMessage({ kind: "error", text: "No matching origins found. Try a nearby town or a more specific name." });
-    } catch (error) { setMessage({ kind: "error", text: messageFor(error) }); }
-    finally { setOriginSearching(false); }
+    } catch (error) {
+      if (mounted.current && isCurrentGeneration(generation, originSearchGeneration.current) && !isCancellation(error)) setMessage({ kind: "error", text: messageFor(error) });
+    } finally {
+      activeControllers.current.delete(controller);
+      if (mounted.current && isCurrentGeneration(generation, originSearchGeneration.current)) setOriginSearching(false);
+    }
   }
 
   async function extractSchedule() {
     if (extractionInFlight.current || saveInFlight.current || !extractionText.trim() || saving) return;
     extractionInFlight.current = true;
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
     setExtracting(true);
     setExtractionError(null);
     setExtractionReview(null);
@@ -376,7 +425,8 @@ export default function ScheduleWorkspace() {
     try {
       const token = await getToken();
       const selectedTimezone = form.timezone.trim();
-      const review = await scheduleApi.extract(extractionText, selectedTimezone || null, token);
+      const review = await scheduleApi.extract(extractionText, selectedTimezone || null, token, { signal: controller.signal });
+      if (!mounted.current) return;
       autoSavePending.current = true;
       idempotencyKey.current ??= crypto.randomUUID();
       setExtractionReview(review);
@@ -413,9 +463,10 @@ export default function ScheduleWorkspace() {
           location: extracted.destination_description ? null : current.location,
         }));
         const placeSearches = await Promise.allSettled([
-          ...(extracted.origin_description ? [scheduleApi.searchLocations(extracted.origin_description, token).then((response) => { setOriginResults(response.results); return { kind: "origin" as const, count: response.results.length }; })] : []),
-          ...(extracted.destination_description ? [scheduleApi.searchLocations(extracted.destination_description, token).then((response) => { setLocationResults(response.results); return { kind: "destination" as const, count: response.results.length }; })] : []),
+          ...(extracted.origin_description ? [scheduleApi.searchLocations(extracted.origin_description, token, { signal: controller.signal }).then((response) => { if (mounted.current) setOriginResults(response.results); return { kind: "origin" as const, count: response.results.length }; })] : []),
+          ...(extracted.destination_description ? [scheduleApi.searchLocations(extracted.destination_description, token, { signal: controller.signal }).then((response) => { if (mounted.current) setLocationResults(response.results); return { kind: "destination" as const, count: response.results.length }; })] : []),
         ]);
+        if (!mounted.current) return;
         setOriginSearching(false);
         setLocationSearching(false);
         if (placeSearches.some((result) => result.status === "rejected")) {
@@ -428,10 +479,11 @@ export default function ScheduleWorkspace() {
         setExtractionTime("");
       }
     } catch (error) {
-      setExtractionError(messageFor(error));
+      if (mounted.current && !isCancellation(error)) setExtractionError(messageFor(error));
     } finally {
+      activeControllers.current.delete(controller);
       extractionInFlight.current = false;
-      setExtracting(false);
+      if (mounted.current) setExtracting(false);
     }
   }
 
@@ -485,12 +537,16 @@ export default function ScheduleWorkspace() {
     setConfirmCancel(false);
     setMessage(null);
     setDetailLoading(true);
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
     try {
       const token = await getToken();
-      const current = await scheduleApi.get(item.id, token);
+      const current = await scheduleApi.get(item.id, token, { signal: controller.signal });
+      if (!mounted.current) return;
       setSelectedSchedule(current);
       setSchedules((items) => items.map((schedule) => schedule.id === current.id ? current : schedule));
     } catch (error) {
+      if (!mounted.current || isCancellation(error)) return;
       setMessage({ kind: "error", text: messageFor(error) });
       if (error instanceof ScheduleApiError && error.status === 404) {
         setSchedules((items) => items.filter((schedule) => schedule.id !== item.id));
@@ -499,7 +555,8 @@ export default function ScheduleWorkspace() {
         setView("list");
       }
     } finally {
-      setDetailLoading(false);
+      activeControllers.current.delete(controller);
+      if (mounted.current) setDetailLoading(false);
     }
   }
 
@@ -629,15 +686,19 @@ export default function ScheduleWorkspace() {
     const currentTime = Date.now();
     if ((routeCooldowns[schedule.id] ?? 0) > currentTime) return;
     setRouteRefreshingId(schedule.id);
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
     setRouteCooldowns((value) => ({ ...value, [schedule.id]: currentTime + 60_000 }));
     setMessage(null);
     try {
       const token = await getToken();
-      const refreshed = await scheduleApi.refreshTravelEstimate(schedule.id, token);
+      const refreshed = await scheduleApi.refreshTravelEstimate(schedule.id, token, { signal: controller.signal });
+      if (!mounted.current) return;
       setSchedules((items) => items.map((item) => item.id === refreshed.id ? refreshed : item));
       setSelectedSchedule((item) => item?.id === refreshed.id ? refreshed : item);
       setMessage({ kind: "success", text: "Travel estimate refreshed." });
     } catch (error) {
+      if (!mounted.current || isCancellation(error)) return;
       if (error instanceof ScheduleApiError && error.retryAfterSeconds !== null) {
         setRouteCooldowns((value) => ({ ...value, [schedule.id]: Date.now() + error.retryAfterSeconds! * 1000 }));
       }
@@ -647,26 +708,32 @@ export default function ScheduleWorkspace() {
       }
       setMessage({ kind: "error", text: messageFor(error) });
     } finally {
-      setRouteRefreshingId(null);
+      activeControllers.current.delete(controller);
+      if (mounted.current) setRouteRefreshingId(null);
     }
   }
 
   async function refreshWeatherEstimate(schedule: Schedule) {
     if (weatherRefreshingId !== null) return;
     setWeatherRefreshingId(schedule.id);
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
     setMessage(null);
     try {
       const token = await getToken();
-      const refreshed = await scheduleApi.refreshWeatherEstimate(schedule.id, token);
+      const refreshed = await scheduleApi.refreshWeatherEstimate(schedule.id, token, { signal: controller.signal });
+      if (!mounted.current) return;
       setSchedules((items) => items.map((item) => item.id === refreshed.id ? refreshed : item));
       setSelectedSchedule((item) => item?.id === refreshed.id ? refreshed : item);
       setMessage(refreshed.weather_estimate?.status === "available"
         ? { kind: "success", text: "Weather advisory refreshed." }
         : { kind: "info", text: refreshed.weather_estimate?.summary ?? "Weather forecast data is unavailable right now." });
     } catch (error) {
+      if (!mounted.current || isCancellation(error)) return;
       setMessage({ kind: "error", text: messageFor(error) });
     } finally {
-      setWeatherRefreshingId(null);
+      activeControllers.current.delete(controller);
+      if (mounted.current) setWeatherRefreshingId(null);
     }
   }
 

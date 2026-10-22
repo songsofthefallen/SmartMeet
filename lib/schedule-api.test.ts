@@ -25,3 +25,27 @@ test("route refresh maps an expected no-route response to its safe error code an
     globalThis.fetch = originalFetch;
   }
 });
+
+test("aborted requests are reported as cancellation instead of service outage", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) => {
+    assert.ok(init?.signal);
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    });
+  };
+
+  const controller = new AbortController();
+  const request = scheduleApi.list("test-token", { signal: controller.signal });
+  controller.abort();
+  try {
+    await assert.rejects(
+      request,
+      (error: unknown) => error instanceof ScheduleApiError
+        && error.code === "cancelled"
+        && error.status === null,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

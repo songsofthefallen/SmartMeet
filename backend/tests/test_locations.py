@@ -99,12 +99,12 @@ def test_tomtom_service_uses_fuzzy_typeahead_and_validates_results(monkeypatch: 
                 {"poi": {"name": "Invalid"}, "position": {"lat": 999, "lon": 0}},
             ]}
 
-    def fake_get(url: str, *, params: dict[str, object], timeout: float) -> Response:
+    def fake_get(url: str, *, params: dict[str, object], timeout: httpx.Timeout) -> Response:
         assert url == "https://api.tomtom.com/search/2/search/Central%20School.json"
         assert params["key"] == "server-test-key"
         assert params["typeahead"] == "true"
         assert params["timeZone"] == "iana"
-        assert timeout <= 10
+        assert timeout.connect == 2.0 and timeout.read == 5.0 and timeout.write == 2.0 and timeout.pool == 2.0
         return Response()
 
     monkeypatch.setattr("location_service.httpx.get", fake_get)
@@ -168,7 +168,7 @@ def test_tomtom_landmark_search_is_bounded_validated_and_cached(monkeypatch: pyt
                 {"poi": {"name": "Unrequested type", "categorySet": [{"id": 1234}]}, "position": {"lat": 14.6, "lon": 121}},
             ]}
 
-    def fake_post(url: str, *, params: dict[str, object], json: dict[str, object], timeout: float) -> Response:
+    def fake_post(url: str, *, params: dict[str, object], json: dict[str, object], timeout: httpx.Timeout) -> Response:
         nonlocal calls
         calls += 1
         assert url == "https://api.tomtom.com/search/2/searchAlongRoute/.json"
@@ -177,7 +177,7 @@ def test_tomtom_landmark_search_is_bounded_validated_and_cached(monkeypatch: pyt
         assert params["limit"] == 20
         assert params["maxDetourTime"] == 300
         assert len(json["route"]["points"]) == 100
-        assert timeout == 5.0
+        assert timeout.connect == 2.0 and timeout.read == 5.0 and timeout.write == 2.0 and timeout.pool == 2.0
         return Response()
 
     monkeypatch.setattr("location_service.httpx.post", fake_post)

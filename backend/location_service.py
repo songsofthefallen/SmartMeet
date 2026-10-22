@@ -1,15 +1,18 @@
 """Replaceable TomTom place search adapter."""
 
 import os
+import logging
 import threading
 import time
 from pathlib import Path
+from time import perf_counter
 from urllib.parse import quote
 
 import httpx
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
+from observability import log_provider_event
 from schemas import LocationSelection, RouteLandmark, TrafficCoordinate
 
 
@@ -20,6 +23,9 @@ _LANDMARK_CACHE_TTL_SECONDS = 6 * 60 * 60
 _LANDMARK_CACHE_MAX_ENTRIES = 200
 _landmark_cache: dict[tuple[tuple[float, float], ...], tuple[float, list[RouteLandmark]]] = {}
 _landmark_cache_lock = threading.Lock()
+TOMTOM_SEARCH_TIMEOUT = httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0)
+TOMTOM_LANDMARK_TIMEOUT = httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0)
+logger = logging.getLogger(__name__)
 
 
 class LocationProviderConfigurationError(Exception):
@@ -44,6 +50,7 @@ class TomTomSearchService:
         if not query:
             return []
 
+        started = perf_counter()
         try:
             response = httpx.get(
                 f"{TOMTOM_SEARCH_URL}/{quote(query, safe='')}.json",
@@ -54,11 +61,18 @@ class TomTomSearchService:
                     "language": "en-US",
                     "timeZone": "iana",
                 },
-                timeout=5.0,
+                timeout=TOMTOM_SEARCH_TIMEOUT,
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.TimeoutException as exc:
+            log_provider_event(logger, provider="tomtom", operation="search", elapsed_ms=round((perf_counter() - started) * 1000), category="timeout", exception_class=type(exc).__name__, level=logging.WARNING)
+            raise LocationProviderError from exc
+        except httpx.HTTPError as exc:
+            log_provider_event(logger, provider="tomtom", operation="search", elapsed_ms=round((perf_counter() - started) * 1000), category="provider_error", upstream_status=getattr(getattr(exc, "response", None), "status_code", None), exception_class=type(exc).__name__, level=logging.WARNING)
+            raise LocationProviderError from exc
+        except ValueError as exc:
+            log_provider_event(logger, provider="tomtom", operation="search", elapsed_ms=round((perf_counter() - started) * 1000), category="invalid_response", exception_class=type(exc).__name__, level=logging.WARNING)
             raise LocationProviderError from exc
 
         if not isinstance(payload, dict):
@@ -106,6 +120,7 @@ class TomTomSearchService:
             {"lat": point.latitude, "lon": point.longitude}
             for point in _sample_landmark_route(route_points)
         ]
+        started = perf_counter()
         try:
             response = httpx.post(
                 TOMTOM_ALONG_ROUTE_URL,
@@ -117,11 +132,18 @@ class TomTomSearchService:
                     "sortBy": "detourTime",
                 },
                 json={"route": {"points": payload_points}},
-                timeout=5.0,
+                timeout=TOMTOM_LANDMARK_TIMEOUT,
             )
             response.raise_for_status()
             payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.TimeoutException as exc:
+            log_provider_event(logger, provider="tomtom", operation="landmarks", elapsed_ms=round((perf_counter() - started) * 1000), category="timeout", exception_class=type(exc).__name__, level=logging.WARNING)
+            raise LocationProviderError("Route landmarks are unavailable") from exc
+        except httpx.HTTPError as exc:
+            log_provider_event(logger, provider="tomtom", operation="landmarks", elapsed_ms=round((perf_counter() - started) * 1000), category="provider_error", upstream_status=getattr(getattr(exc, "response", None), "status_code", None), exception_class=type(exc).__name__, level=logging.WARNING)
+            raise LocationProviderError("Route landmarks are unavailable") from exc
+        except ValueError as exc:
+            log_provider_event(logger, provider="tomtom", operation="landmarks", elapsed_ms=round((perf_counter() - started) * 1000), category="invalid_response", exception_class=type(exc).__name__, level=logging.WARNING)
             raise LocationProviderError("Route landmarks are unavailable") from exc
 
         raw_results = payload.get("results") if isinstance(payload, dict) else None

@@ -7,16 +7,20 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 
 import httpx
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
+from observability import log_provider_event
 from schemas import LocationSelection, RouteAlternative, TrafficCoordinate, TrafficSection, TravelEstimate
 
 logger = logging.getLogger(__name__)
 TOMTOM_REVERSE_GEOCODE_URL = "https://api.tomtom.com/search/2/reverseGeocode"
 TOMTOM_ROUTE_TIMEOUT_SECONDS = 35.0
+TOMTOM_ROUTE_TIMEOUT = httpx.Timeout(connect=3.0, read=TOMTOM_ROUTE_TIMEOUT_SECONDS, write=5.0, pool=5.0)
+TOMTOM_REVERSE_GEOCODE_TIMEOUT = httpx.Timeout(connect=1.0, read=2.0, write=1.0, pool=2.0)
 _REVERSE_GEOCODE_CACHE_TTL_SECONDS = 6 * 60 * 60
 _REVERSE_GEOCODE_CACHE_MAX_ENTRIES = 500
 _REVERSE_GEOCODE_REQUEST_LIMIT_PER_ROUTE = 3
@@ -118,11 +122,12 @@ def _reverse_geocode_location(coordinate: TrafficCoordinate, api_key: str) -> st
             _reverse_geocode_cache.pop(cache_key, None)
 
     result: str | None = None
+    started = perf_counter()
     try:
         response = httpx.get(
             f"{TOMTOM_REVERSE_GEOCODE_URL}/{coordinate.latitude},{coordinate.longitude}.json",
             params={"key": api_key, "radius": "50", "returnMatchType": "true"},
-            timeout=2.0,
+            timeout=TOMTOM_REVERSE_GEOCODE_TIMEOUT,
         )
         response.raise_for_status()
         payload = response.json()
@@ -131,7 +136,14 @@ def _reverse_geocode_location(coordinate: TrafficCoordinate, api_key: str) -> st
             address = addresses[0].get("address")
             if isinstance(address, dict) and isinstance(address.get("streetName"), str):
                 result = " ".join(address["streetName"].split())[:180] or None
-    except (httpx.HTTPError, ValueError, TypeError):
+    except httpx.TimeoutException as exc:
+        log_provider_event(logger, provider="tomtom", operation="reverse_geocode", elapsed_ms=round((perf_counter() - started) * 1000), category="timeout", exception_class=type(exc).__name__, level=logging.WARNING)
+        result = None
+    except httpx.HTTPError as exc:
+        log_provider_event(logger, provider="tomtom", operation="reverse_geocode", elapsed_ms=round((perf_counter() - started) * 1000), category="provider_error", upstream_status=getattr(getattr(exc, "response", None), "status_code", None), exception_class=type(exc).__name__, level=logging.WARNING)
+        result = None
+    except (ValueError, TypeError) as exc:
+        log_provider_event(logger, provider="tomtom", operation="reverse_geocode", elapsed_ms=round((perf_counter() - started) * 1000), category="invalid_response", exception_class=type(exc).__name__, level=logging.WARNING)
         # The auxiliary lookup must never turn a valid route into a failure.
         result = None
 
@@ -358,24 +370,32 @@ class TomTomRoutingService:
             time_basis = "scheduled_arrival"
         else:
             time_basis = "current"
+        started = perf_counter()
         try:
             response = httpx.get(
                 f"{TOMTOM_ROUTE_URL}/{coordinates}/json",
                 params=params,
-                timeout=TOMTOM_ROUTE_TIMEOUT_SECONDS,
+                timeout=TOMTOM_ROUTE_TIMEOUT,
             )
         except httpx.TimeoutException as exc:
+            log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category="timeout", exception_class=type(exc).__name__, level=logging.WARNING)
             raise RoutingProviderError(reason="timeout") from exc
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPError as exc:
+            log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category="provider_error", upstream_status=getattr(getattr(exc, "response", None), "status_code", None), exception_class=type(exc).__name__, level=logging.WARNING)
+            raise RoutingProviderError from exc
+        except ValueError as exc:
+            log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category="invalid_response", exception_class=type(exc).__name__, level=logging.WARNING)
             raise RoutingProviderError from exc
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category=_tomtom_error_reason(response), upstream_status=getattr(response, "status_code", getattr(exc.response, "status_code", None)), exception_class=type(exc).__name__, level=logging.WARNING)
             raise RoutingProviderError(reason=_tomtom_error_reason(response)) from exc
         retrieved_at = datetime.now(timezone.utc)
         try:
             payload = response.json()
         except (ValueError, TypeError) as exc:
+            log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category="invalid_response", upstream_status=response.status_code, exception_class=type(exc).__name__, level=logging.WARNING)
             raise RoutingProviderError(reason="invalid_response") from exc
         if isinstance(payload, dict) and payload.get("routes") == []:
             raise RoutingProviderError(reason="no_route")

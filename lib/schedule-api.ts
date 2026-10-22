@@ -123,6 +123,8 @@ export class ScheduleApiError extends Error {
   }
 }
 
+export type ScheduleRequestOptions = { signal?: AbortSignal };
+
 const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -249,6 +251,7 @@ async function request<T>(
   method = "GET",
   body?: unknown,
   validate?: (value: unknown) => value is T,
+  options: ScheduleRequestOptions = {},
 ): Promise<T> {
   if (!token) throw new ScheduleApiError("Your session is unavailable. Refresh the page or sign in again.", 401);
 
@@ -259,8 +262,12 @@ async function request<T>(
       headers: { Accept: "application/json", Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       cache: "no-store",
+      signal: options.signal,
     });
-  } catch {
+  } catch (error) {
+    if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+      throw new ScheduleApiError("Request cancelled.", null, null, "cancelled");
+    }
     throw new ScheduleApiError("Could not reach the schedule service. Check your connection and try again.", null);
   }
 
@@ -330,26 +337,30 @@ function isRouteLandmarks(value: unknown): value is RouteLandmarkEstimate[] {
 }
 
 export const scheduleApi = {
-  registerPushSubscription(subscription: { endpoint: string; keys: { p256dh: string; auth: string } }, token: string | null) {
-    return request<null>("/push/subscriptions", token, "POST", subscription);
+  registerPushSubscription(subscription: { endpoint: string; keys: { p256dh: string; auth: string } }, token: string | null, options?: ScheduleRequestOptions) {
+    return request<null>("/push/subscriptions", token, "POST", subscription, undefined, options);
   },
-  removePushSubscription(endpoint: string, token: string | null) {
-    return request<null>("/push/subscriptions", token, "DELETE", { endpoint });
+  removePushSubscription(endpoint: string, token: string | null, options?: ScheduleRequestOptions) {
+    return request<null>("/push/subscriptions", token, "DELETE", { endpoint }, undefined, options);
   },
-  testPushNotification(token: string | null) {
-    return request<{ accepted: true }>("/push/test", token, "POST", undefined, (value): value is { accepted: true } => isRecord(value) && value.accepted === true);
+  testPushNotification(token: string | null, options?: ScheduleRequestOptions) {
+    return request<{ accepted: true }>("/push/test", token, "POST", undefined, (value): value is { accepted: true } => isRecord(value) && value.accepted === true, options);
   },
-  routeLandmarks(route_points: NonNullable<RouteAlternativeEstimate["geometry"]>, token: string | null) {
-    return request<RouteLandmarkEstimate[]>("/schedules/route-landmarks", token, "POST", { route_points }, isRouteLandmarks);
+  routeLandmarks(route_points: NonNullable<RouteAlternativeEstimate["geometry"]>, token: string | null, options?: ScheduleRequestOptions) {
+    return request<RouteLandmarkEstimate[]>("/schedules/route-landmarks", token, "POST", { route_points }, isRouteLandmarks, options);
   },
-  async routeMap(bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number }, token: string | null): Promise<Blob> {
+  async routeMap(bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number }, token: string | null, options: ScheduleRequestOptions = {}): Promise<Blob> {
     const query = new URLSearchParams(Object.entries(bounds).map(([key, value]) => [key, String(value)]));
     let response: Response;
     try {
       response = await fetch(`${apiBaseUrl}/schedules/route-map?${query}`, {
         headers: { Accept: "image/png", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        signal: options.signal,
       });
-    } catch {
+    } catch (error) {
+      if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
+        throw new ScheduleApiError("Request cancelled.", null, null, "cancelled");
+      }
       throw new ScheduleApiError("Map preview could not be loaded. Route details are still available.", null);
     }
     if (!response.ok) {
@@ -357,40 +368,41 @@ export const scheduleApi = {
     }
     return response.blob();
   },
-  routeOptions(input: Pick<ScheduleInput, "origin_location" | "location" | "time_intent" | "target_datetime">, token: string | null) {
-    return request<{ alternatives: RouteAlternativeEstimate[] }>("/schedules/route-options", token, "POST", input, isRouteOptions);
+  routeOptions(input: Pick<ScheduleInput, "origin_location" | "location" | "time_intent" | "target_datetime">, token: string | null, options?: ScheduleRequestOptions) {
+    return request<{ alternatives: RouteAlternativeEstimate[] }>("/schedules/route-options", token, "POST", input, isRouteOptions, options);
   },
-  searchLocations(query: string, token: string | null) {
-    return request<{ results: LocationSelection[] }>("/locations/search", token, "POST", { query }, isLocationSearch);
+  searchLocations(query: string, token: string | null, options?: ScheduleRequestOptions) {
+    return request<{ results: LocationSelection[] }>("/locations/search", token, "POST", { query }, isLocationSearch, options);
   },
-  extract(text: string, timezone: string | null, token: string | null) {
+  extract(text: string, timezone: string | null, token: string | null, options?: ScheduleRequestOptions) {
     return request<ScheduleExtractionReview>(
       "/schedules/extract",
       token,
       "POST",
       { text, timezone },
       isScheduleExtractionReview,
+      options,
     );
   },
-  list(token: string | null) {
-    return request<Schedule[]>("/schedules", token, "GET", undefined, isScheduleList);
+  list(token: string | null, options?: ScheduleRequestOptions) {
+    return request<Schedule[]>("/schedules", token, "GET", undefined, isScheduleList, options);
   },
-  get(id: number, token: string | null) {
-    return request<Schedule>(`/schedules/${id}`, token, "GET", undefined, isSchedule);
+  get(id: number, token: string | null, options?: ScheduleRequestOptions) {
+    return request<Schedule>(`/schedules/${id}`, token, "GET", undefined, isSchedule, options);
   },
-  create(input: ScheduleInput & { continue_without_route?: boolean }, token: string | null) {
-    return request<Schedule>("/schedules", token, "POST", input, isSchedule);
+  create(input: ScheduleInput & { continue_without_route?: boolean }, token: string | null, options?: ScheduleRequestOptions) {
+    return request<Schedule>("/schedules", token, "POST", input, isSchedule, options);
   },
-  update(id: number, input: ScheduleUpdateInput, token: string | null) {
-    return request<Schedule>(`/schedules/${id}`, token, "PATCH", input, isSchedule);
+  update(id: number, input: ScheduleUpdateInput, token: string | null, options?: ScheduleRequestOptions) {
+    return request<Schedule>(`/schedules/${id}`, token, "PATCH", input, isSchedule, options);
   },
-  cancel(id: number, token: string | null) {
-    return request<Schedule>(`/schedules/${id}/cancel`, token, "POST", undefined, isSchedule);
+  cancel(id: number, token: string | null, options?: ScheduleRequestOptions) {
+    return request<Schedule>(`/schedules/${id}/cancel`, token, "POST", undefined, isSchedule, options);
   },
-  refreshTravelEstimate(id: number, token: string | null) {
-    return request<Schedule>(`/schedules/${id}/travel-estimate/refresh`, token, "POST", undefined, isSchedule);
+  refreshTravelEstimate(id: number, token: string | null, options?: ScheduleRequestOptions) {
+    return request<Schedule>(`/schedules/${id}/travel-estimate/refresh`, token, "POST", undefined, isSchedule, options);
   },
-  refreshWeatherEstimate(id: number, token: string | null) {
-    return request<Schedule>(`/schedules/${id}/weather-estimate/refresh`, token, "POST", undefined, isSchedule);
+  refreshWeatherEstimate(id: number, token: string | null, options?: ScheduleRequestOptions) {
+    return request<Schedule>(`/schedules/${id}/weather-estimate/refresh`, token, "POST", undefined, isSchedule, options);
   },
 };

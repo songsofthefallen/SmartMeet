@@ -213,7 +213,7 @@ def test_endpoint_timeout_is_unavailable_and_never_applies_unverified_buffer(
     assert result._diagnostic.reason == "provider_timeout"
     assert result._diagnostic.failed_point == failed_point
     assert len(client.calls) == 2
-    assert all(timeout == 4.0 for _, timeout in client.calls)
+    assert all(timeout.connect == 2.0 and timeout.read == 4.0 and timeout.write == 2.0 and timeout.pool == 2.0 for _, timeout in client.calls)
 
 
 def test_weather_assessment_can_recover_on_a_later_attempt_without_reusing_failed_data() -> None:
@@ -235,7 +235,7 @@ def test_weather_assessment_can_recover_on_a_later_attempt_without_reusing_faile
     assert any(item.condition == "Heavy rain" for item in recovered.advisories)
     assert recovered.origin_weather is not None and recovered.origin_weather.precipitation_mm == 8
     assert len(client.calls) == 4
-    assert all(timeout == 4.0 for _, timeout in client.calls)
+    assert all(timeout.connect == 2.0 and timeout.read == 4.0 and timeout.write == 2.0 and timeout.pool == 2.0 for _, timeout in client.calls)
 
 
 def test_weather_request_failure_has_structured_reason() -> None:
