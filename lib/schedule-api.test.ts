@@ -26,6 +26,41 @@ test("route refresh maps an expected no-route response to its safe error code an
   }
 });
 
+test("route options keep suspicious route data distinct from a no-route outcome", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input).endsWith("/schedules/route-options"), true);
+    const sent = JSON.parse(String(init?.body));
+    assert.deepEqual(
+      [sent.origin_location.latitude, sent.origin_location.longitude, sent.location.latitude, sent.location.longitude],
+      [14.5, 121.0, 14.6, 121.1],
+    );
+    return new Response(JSON.stringify({
+      detail: {
+        code: "suspicious_route",
+        message: "TomTom returned route details that look implausible. This estimate was not used.",
+      },
+    }), { status: 422, headers: { "Content-Type": "application/json; charset=utf-8" } });
+  };
+
+  try {
+    await assert.rejects(
+      scheduleApi.routeOptions({
+        origin_location: { name: "A", locality: null, region: null, country: null, latitude: 14.5, longitude: 121.0, timezone: null },
+        location: { name: "B", locality: null, region: null, country: null, latitude: 14.6, longitude: 121.1, timezone: null },
+        time_intent: "arrival",
+        target_datetime: "2026-10-30T10:00:00+08:00",
+      }, "test-token"),
+      (error: unknown) => error instanceof ScheduleApiError
+        && error.status === 422
+        && error.code === "suspicious_route"
+        && error.message.includes("This estimate was not used"),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("aborted requests are reported as cancellation instead of service outage", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_input, init) => {

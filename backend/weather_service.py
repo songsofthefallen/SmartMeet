@@ -155,55 +155,67 @@ class OpenMeteoWeatherService:
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise WeatherProviderError("invalid_response_values", requested_hour, point) from exc
 
-    def assess(self, origin: LocationSelection, destination: LocationSelection, departure: datetime, arrival: datetime, *, assessment_pass: int = 1) -> WeatherEstimate:
+    def assess(self, origin: LocationSelection | None, destination: LocationSelection | None, departure: datetime, arrival: datetime, *, assessment_pass: int = 1) -> WeatherEstimate:
         now_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        departure_hour = departure.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        arrival_hour = arrival.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        departure_too_early = departure_hour < now_hour
-        arrival_too_late = arrival_hour > now_hour + timedelta(days=15)
-        if departure_too_early or arrival_too_late:
-            if departure_too_early and arrival_too_late:
-                rejection_reason = "departure_before_current_hour_and_arrival_beyond_forecast_horizon"
-            elif departure_too_early:
-                rejection_reason = "departure_before_current_hour"
+        requested = [("origin", origin, departure), ("destination", destination, arrival)]
+        statuses: dict[str, str | None] = {"origin": None, "destination": None}
+        messages: dict[str, str | None] = {"origin": None, "destination": None}
+        samples: dict[str, dict[str, object]] = {}
+        failures: list[WeatherProviderError] = []
+        invalid_points: list[str] = []
+        rejected_points: list[tuple[str, str]] = []
+        pending: list[tuple[str, object, datetime]] = []
+        for point, location, when in requested:
+            if location is None:
+                continue
+            hour = when.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            if hour < now_hour or hour > now_hour + timedelta(days=15):
+                statuses[point] = "unavailable"
+                messages[point] = (
+                    "Past weather data is unavailable for this time."
+                    if hour < now_hour
+                    else "This date is beyond the 15-day forecast window."
+                )
+                rejected_points.append((point, "departure_before_current_hour" if hour < now_hour else "arrival_beyond_forecast_horizon"))
             else:
-                rejection_reason = "arrival_beyond_forecast_horizon"
-            return _unavailable(
-                "unsupported_forecast_time", assessment_pass, departure, arrival,
-                rejection_reason=rejection_reason, current_utc_hour=now_hour,
-            )
-        try:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                origin_future = pool.submit(self._forecast, origin, departure, "origin")
-                destination_future = pool.submit(self._forecast, destination, arrival, "destination")
-                samples = [("origin", origin_future.result()), ("destination", destination_future.result())]
-        except WeatherProviderError as exc:
-            estimate = _unavailable(exc.reason, assessment_pass, departure, arrival, failed_point=exc.point)
-            return estimate
-        except Exception:
-            return _unavailable("provider_request_failure", assessment_pass, departure, arrival)
+                pending.append((point, location, when))
 
+        with ThreadPoolExecutor(max_workers=max(1, len(pending))) as pool:
+            futures = [(point, pool.submit(self._forecast, location, when, point)) for point, location, when in pending]
+            for point, future in futures:
+                try:
+                    samples[point] = future.result()
+                except WeatherProviderError as exc:
+                    statuses[point] = "unavailable"
+                    messages[point] = "We could not retrieve this weather forecast right now. You can try again."
+                    failures.append(exc)
+                except Exception:
+                    statuses[point] = "unavailable"
+                    messages[point] = "We could not retrieve this weather forecast right now. You can try again."
+
+        point_forecasts: dict[str, dict[str, object]] = {}
         conditions: list[str] = []
         advisories: list[WeatherAdvisory] = []
-        point_forecasts: list[dict[str, object]] = []
-        for point, values in samples:
-            rain = _number(values["precipitation"])
-            snow = _number(values["snowfall"])
-            wind = _number(values["wind_speed_10m"])
-            code = _number(values["weather_code"])
-            if rain is None or snow is None or wind is None or code is None or not code.is_integer():
-                return _unavailable("invalid_response_values", assessment_pass, departure, arrival, failed_point=point)
-            condition = condition_for_weather_code(int(code))
-            if condition is None:
-                return _unavailable("invalid_response_values", assessment_pass, departure, arrival, failed_point=point)
-            point_forecasts.append({
+        for point, values in samples.items():
+            rain = _number(values.get("precipitation"))
+            snow = _number(values.get("snowfall"))
+            wind = _number(values.get("wind_speed_10m"))
+            code = _number(values.get("weather_code"))
+            condition = condition_for_weather_code(int(code)) if code is not None and code.is_integer() else None
+            if rain is None or snow is None or wind is None or code is None or condition is None:
+                statuses[point] = "unavailable"
+                messages[point] = "We could not retrieve this weather forecast right now. You can try again."
+                invalid_points.append(point)
+                continue
+            statuses[point] = "available"
+            point_forecasts[point] = {
                 "condition": condition,
                 "weather_code": int(code),
                 "precipitation_mm": rain,
                 "snowfall_cm": snow,
                 "wind_speed_kmh": wind,
-            })
-            forecast_at = departure if point == "origin" else arrival
+            }
+            when = departure if point == "origin" else arrival
             endpoint_conditions: list[str] = []
             if rain >= 7.5:
                 endpoint_conditions.append("Heavy rain")
@@ -215,27 +227,77 @@ class OpenMeteoWeatherService:
                 endpoint_conditions.append("Strong winds")
             if int(code) in {95, 96, 99}:
                 endpoint_conditions.append("Thunderstorm")
-            for condition in endpoint_conditions:
-                conditions.append(f"{condition} near {point}")
+            for advisory in endpoint_conditions:
+                conditions.append(f"{advisory} near {point}")
                 advisories.append(WeatherAdvisory(
-                    condition=condition,
+                    condition=advisory,
                     endpoint=point,
-                    forecast_at=forecast_at.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0),
+                    forecast_at=when.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0),
                 ))
-        summary = (
-            "Forecast conditions at a selected route endpoint may affect your trip."
-            if advisories
-            else "No significant weather concerns detected at the selected route endpoints."
-        )
-        origin_forecast_at = departure.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        destination_forecast_at = arrival.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        return WeatherEstimate(
-            status="available", summary=summary,
-            retrieved_at=datetime.now(timezone.utc), forecast_at=origin_forecast_at,
-            origin_forecast_at=origin_forecast_at,
-            destination_forecast_at=destination_forecast_at,
-            origin_weather=point_forecasts[0],
-            destination_weather=point_forecasts[1],
+
+        available_points = [point for point, status in statuses.items() if status == "available"]
+        requested_points = [point for point, location, _ in requested if location is not None]
+        if not requested_points:
+            return _unavailable("no_location", assessment_pass, departure, arrival)
+        all_available = len(available_points) == len(requested_points)
+        overall_status = "available" if available_points else "unavailable"
+        if advisories:
+            summary = "Forecast conditions at a selected route endpoint may affect your trip."
+        elif not available_points:
+            summary = "We could not retrieve this weather forecast right now. You can try again."
+        elif not all_available:
+            summary = "Some selected location forecasts are unavailable."
+        else:
+            summary = "No significant weather concerns detected at the selected route endpoints."
+        origin_hour = departure.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        destination_hour = arrival.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        result = WeatherEstimate(
+            status=overall_status,
+            summary=summary,
+            retrieved_at=datetime.now(timezone.utc) if available_points else None,
+            forecast_at=origin_hour if origin is not None else destination_hour,
+            origin_forecast_at=origin_hour if origin is not None else None,
+            destination_forecast_at=destination_hour if destination is not None else None,
+            origin_weather=point_forecasts.get("origin"),
+            destination_weather=point_forecasts.get("destination"),
+            origin_status=statuses["origin"],
+            destination_status=statuses["destination"],
+            origin_message=messages["origin"],
+            destination_message=messages["destination"],
             conditions=conditions,
             advisories=advisories,
         )
+        if failures:
+            first = failures[0]
+            result._diagnostic = WeatherAssessmentDiagnostic(
+                reason=first.reason,
+                assessment_pass=assessment_pass,
+                origin_forecast_hour=_hour_string(departure),
+                destination_forecast_hour=_hour_string(arrival),
+                failed_point=first.point,
+            )
+        elif rejected_points and len(rejected_points) == len(requested_points):
+            reasons = {reason for _, reason in rejected_points}
+            rejection_reason = (
+                "departure_before_current_hour_and_arrival_beyond_forecast_horizon"
+                if reasons == {"departure_before_current_hour", "arrival_beyond_forecast_horizon"}
+                else next(iter(reasons))
+            )
+            result._diagnostic = WeatherAssessmentDiagnostic(
+                reason="unsupported_forecast_time",
+                assessment_pass=assessment_pass,
+                origin_forecast_hour=_hour_string(departure),
+                destination_forecast_hour=_hour_string(arrival),
+                failed_point=None,
+                rejection_reason=rejection_reason,
+                current_utc_hour=_hour_string(now_hour),
+            )
+        elif invalid_points and not available_points:
+            result._diagnostic = WeatherAssessmentDiagnostic(
+                reason="invalid_response_values",
+                assessment_pass=assessment_pass,
+                origin_forecast_hour=_hour_string(departure),
+                destination_forecast_hour=_hour_string(arrival),
+                failed_point=invalid_points[0],
+            )
+        return result

@@ -1,5 +1,7 @@
 """SQLAlchemy models for persisted application data."""
 
+import hashlib
+import json
 from datetime import datetime
 from enum import Enum
 
@@ -80,6 +82,8 @@ class Schedule(Base):
     origin_location: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     travel_estimate: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     weather_estimate: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    route_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    route_location_signature: Mapped[str | None] = mapped_column(String(64), nullable=True)
     time_intent: Mapped[TimeIntent] = mapped_column(
         SqlEnum(
             TimeIntent,
@@ -114,6 +118,23 @@ class Schedule(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp()
     )
+
+    @property
+    def route_availability(self) -> str | None:
+        if (
+            self.route_status == "no_drivable_route"
+            and self.route_location_signature == location_pair_signature(self.origin_location, self.location)
+        ):
+            return "no_drivable_route"
+        return None
+
+
+def location_pair_signature(origin: dict | None, destination: dict | None) -> str | None:
+    """Hash the selected pair so a stored no-route result cannot outlive location edits."""
+    if not isinstance(origin, dict) or not isinstance(destination, dict):
+        return None
+    encoded = json.dumps([origin, destination], sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class Reminder(Base):

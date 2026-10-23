@@ -34,6 +34,7 @@ def log_provider_event(
     category: str,
     upstream_status: int | None = None,
     exception_class: str | None = None,
+    diagnostic: str | None = None,
     level: int = logging.INFO,
 ) -> None:
     """Log fixed, sanitized metadata without provider secrets or request data."""
@@ -45,6 +46,7 @@ def log_provider_event(
         "category": category,
         "upstream_status": upstream_status,
         "exception_class": exception_class,
+        "diagnostic": diagnostic,
     }
     rendered = " ".join(f"{key}={value!r}" for key, value in fields.items())
     logger.log(level, "provider_request %s", rendered, extra=fields)

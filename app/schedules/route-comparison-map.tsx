@@ -35,7 +35,11 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
   const selectedPoints = useMemo(() => selectedRoute?.geometry ?? [], [selectedRoute]);
   const landmarkKey = selectedRoute ? `${selectedRoute.route_id}:${JSON.stringify(selectedPoints)}` : "";
   const map = useMemo(() => {
-    const points = visibleRoutes.flatMap((route) => route.geometry ?? []);
+    const points = [
+      ...visibleRoutes.flatMap((route) => route.geometry ?? []),
+      ...(origin ? [{ latitude: origin.latitude, longitude: origin.longitude }] : []),
+      ...(destination ? [{ latitude: destination.latitude, longitude: destination.longitude }] : []),
+    ];
     if (points.length < 2) return null;
     let minX = Math.min(...points.map((point) => point.longitude)) * Math.PI / 180;
     let maxX = Math.max(...points.map((point) => point.longitude)) * Math.PI / 180;
@@ -65,7 +69,7 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
       max_lat: Math.min(MERCATOR_LIMIT, inverseMercatorY(maxY)),
     };
     return { bounds, minX, maxX, minY, maxY };
-  }, [visibleRoutes]);
+  }, [visibleRoutes, origin, destination]);
 
   useEffect(() => {
     if (selectedPoints.length < 2 || !landmarkKey) return;

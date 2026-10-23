@@ -5,7 +5,7 @@ import base64
 import binascii
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, StringConstraints, computed_field, field_serializer, field_validator, model_validator
 
@@ -44,6 +44,7 @@ class ScheduleCreate(BaseModel):
     idempotency_key: Annotated[str, StringConstraints(min_length=16, max_length=64)] | None = None
     continue_without_route: bool = False
     selected_route_id: Annotated[str, StringConstraints(min_length=1, max_length=20)] | None = None
+    route_outcome: Literal["no_drivable_route"] | None = None
 
     @field_validator("target_datetime")
     @classmethod
@@ -59,6 +60,17 @@ class ScheduleCreate(BaseModel):
     @classmethod
     def timezone_must_be_valid(cls, value: str) -> str:
         return _require_timezone(value)
+
+    @model_validator(mode="after")
+    def no_route_outcome_requires_confirmed_pair_and_route_bypass(self) -> "ScheduleCreate":
+        if self.route_outcome is not None and (
+            not self.continue_without_route
+            or self.origin_location is None
+            or self.location is None
+            or self.selected_route_id is not None
+        ):
+            raise ValueError("a no-route outcome requires selected locations and saving without a route")
+        return self
 
 
 class RouteOptionsRequest(BaseModel):
@@ -121,6 +133,7 @@ class ScheduleResponse(BaseModel):
     origin_location: "LocationSelection | None"
     travel_estimate: "TravelEstimate | None"
     weather_estimate: "WeatherEstimate | None" = None
+    route_availability: Literal["no_drivable_route"] | None = None
     time_intent: TimeIntent
     target_datetime: datetime
     timezone: str
@@ -288,6 +301,10 @@ class WeatherEstimate(BaseModel):
     timing_note: Annotated[str, StringConstraints(max_length=300)] | None = Field(default=None, exclude=True)
     origin_weather: WeatherPointForecast | None = None
     destination_weather: WeatherPointForecast | None = None
+    origin_status: Literal["available", "unavailable"] | None = None
+    destination_status: Literal["available", "unavailable"] | None = None
+    origin_message: Annotated[str, StringConstraints(max_length=300)] | None = None
+    destination_message: Annotated[str, StringConstraints(max_length=300)] | None = None
     conditions: list[Annotated[str, StringConstraints(max_length=80)]] = Field(default_factory=list, max_length=10)
     advisories: list[WeatherAdvisory] = Field(default_factory=list, max_length=20)
     _diagnostic: WeatherAssessmentDiagnostic | None = PrivateAttr(default=None)

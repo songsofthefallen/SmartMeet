@@ -24,6 +24,9 @@ TOMTOM_REVERSE_GEOCODE_TIMEOUT = httpx.Timeout(connect=1.0, read=2.0, write=1.0,
 _REVERSE_GEOCODE_CACHE_TTL_SECONDS = 6 * 60 * 60
 _REVERSE_GEOCODE_CACHE_MAX_ENTRIES = 500
 _REVERSE_GEOCODE_REQUEST_LIMIT_PER_ROUTE = 3
+_DEFAULT_MAX_ROUTE_DETOUR_RATIO = 8.0
+_DEFAULT_MIN_ROUTE_DISTANCE_FOR_DETOUR_CHECK_METERS = 250_000.0
+_DEFAULT_MAX_DRIVING_SPEED_KMH = 200.0
 _reverse_geocode_cache: dict[tuple[float, float], tuple[float, str | None]] = {}
 _reverse_geocode_cache_lock = threading.Lock()
 
@@ -35,6 +38,64 @@ def _optional_seconds(summary: dict[str, object], key: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0 or value > 2_147_483_647 or not math.isfinite(value):
         return None
     return int(math.ceil(value))
+
+
+def _route_sanity_limits() -> tuple[float, float]:
+    """Read conservative route sanity thresholds; values can be tuned per deployment."""
+    try:
+        ratio = float(os.getenv("ROUTE_MAX_DETOUR_RATIO", str(_DEFAULT_MAX_ROUTE_DETOUR_RATIO)))
+        minimum_distance = float(os.getenv(
+            "ROUTE_MIN_DISTANCE_FOR_DETOUR_CHECK_METERS",
+            str(_DEFAULT_MIN_ROUTE_DISTANCE_FOR_DETOUR_CHECK_METERS),
+        ))
+        if math.isfinite(ratio) and ratio >= 1 and math.isfinite(minimum_distance) and minimum_distance > 0:
+            return ratio, minimum_distance
+    except (TypeError, ValueError):
+        pass
+    return _DEFAULT_MAX_ROUTE_DETOUR_RATIO, _DEFAULT_MIN_ROUTE_DISTANCE_FOR_DETOUR_CHECK_METERS
+
+
+def _max_driving_speed_kmh() -> float:
+    try:
+        speed = float(os.getenv("ROUTE_MAX_AVERAGE_SPEED_KMH", str(_DEFAULT_MAX_DRIVING_SPEED_KMH)))
+        if math.isfinite(speed) and speed > 0:
+            return speed
+    except (TypeError, ValueError):
+        pass
+    return _DEFAULT_MAX_DRIVING_SPEED_KMH
+
+
+def _great_circle_distance_meters(origin: LocationSelection, destination: LocationSelection) -> float:
+    earth_radius_meters = 6_371_008.8
+    lat1, lat2 = math.radians(origin.latitude), math.radians(destination.latitude)
+    delta_lat = lat2 - lat1
+    delta_lon = math.radians(destination.longitude - origin.longitude)
+    haversine = math.sin(delta_lat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+    return 2 * earth_radius_meters * math.asin(math.sqrt(min(1.0, max(0.0, haversine))))
+
+
+def _route_suspicion(
+    *, distance_meters: float, duration_seconds: float, traffic_delay_seconds: float | None,
+    origin: LocationSelection, destination: LocationSelection,
+) -> str | None:
+    if not math.isfinite(distance_meters) or distance_meters <= 0:
+        return "invalid_distance"
+    if not math.isfinite(duration_seconds) or duration_seconds <= 0:
+        return "invalid_duration"
+    if traffic_delay_seconds is not None and (
+        not math.isfinite(traffic_delay_seconds) or traffic_delay_seconds < 0
+    ):
+        return "invalid_traffic_delay"
+    if distance_meters / duration_seconds * 3.6 > _max_driving_speed_kmh():
+        return "excessive_average_driving_speed"
+    straight_distance = _great_circle_distance_meters(origin, destination)
+    ratio_limit, minimum_distance = _route_sanity_limits()
+    if straight_distance > 1 and distance_meters >= minimum_distance:
+        if distance_meters < straight_distance * 0.98:
+            return "route_shorter_than_straight_line"
+        if distance_meters / straight_distance > ratio_limit:
+            return "excessive_driving_detour_ratio"
+    return None
 
 
 def _section_index(section: dict[str, object], key: str) -> int | None:
@@ -322,6 +383,11 @@ class RoutingProviderError(Exception):
 
 def _tomtom_error_reason(response: httpx.Response) -> str:
     """Classify allowlisted provider codes without retaining raw response text."""
+    # Transport/server failures, authentication problems, and throttling say
+    # nothing about whether a drivable route exists.
+    status_code = getattr(response, "status_code", None)
+    if status_code in {401, 403, 429} or (isinstance(status_code, int) and status_code >= 500):
+        return "provider_error"
     try:
         payload = response.json()
     except (ValueError, TypeError):
@@ -398,6 +464,7 @@ class TomTomRoutingService:
             log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category="invalid_response", upstream_status=response.status_code, exception_class=type(exc).__name__, level=logging.WARNING)
             raise RoutingProviderError(reason="invalid_response") from exc
         if isinstance(payload, dict) and payload.get("routes") == []:
+            log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category="no_route", upstream_status=getattr(response, "status_code", None), diagnostic="route_count=0")
             raise RoutingProviderError(reason="no_route")
         try:
             routes = payload["routes"]
@@ -405,16 +472,39 @@ class TomTomRoutingService:
                 raise ValueError
             alternatives: list[RouteAlternative] = []
             route_payloads: dict[str, dict[str, object]] = {}
+            suspicious_routes: list[str] = []
             for index, candidate in enumerate(routes[:6]):
                 if not isinstance(candidate, dict) or not isinstance(candidate.get("summary"), dict):
                     continue
                 summary = candidate["summary"]
                 seconds = summary.get("travelTimeInSeconds")
-                if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not math.isfinite(seconds) or seconds < 0 or seconds > 2_147_483_647 * 60:
+                if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not math.isfinite(seconds) or seconds <= 0 or seconds > 2_147_483_647 * 60:
+                    suspicious_routes.append(f"{index}:invalid_duration")
                     continue
                 distance = summary.get("lengthInMeters")
-                if isinstance(distance, bool) or not isinstance(distance, (int, float)) or distance < 0 or not math.isfinite(distance):
-                    distance = None
+                if isinstance(distance, bool) or not isinstance(distance, (int, float)) or distance <= 0 or not math.isfinite(distance):
+                    suspicious_routes.append(f"{index}:invalid_distance")
+                    continue
+                raw_traffic_delay = summary.get("trafficDelayInSeconds")
+                if raw_traffic_delay is not None and (
+                    isinstance(raw_traffic_delay, bool)
+                    or not isinstance(raw_traffic_delay, (int, float))
+                    or not math.isfinite(raw_traffic_delay)
+                    or raw_traffic_delay < 0
+                    or raw_traffic_delay > 2_147_483_647
+                ):
+                    suspicious_routes.append(f"{index}:invalid_traffic_delay")
+                    continue
+                suspicion = _route_suspicion(
+                    distance_meters=distance,
+                    duration_seconds=seconds,
+                    traffic_delay_seconds=raw_traffic_delay,
+                    origin=origin,
+                    destination=destination,
+                )
+                if suspicion:
+                    suspicious_routes.append(f"{index}:{suspicion}")
+                    continue
                 sections = candidate.get("sections")
                 road_names: list[str] = []
                 if isinstance(sections, list):
@@ -444,10 +534,23 @@ class TomTomRoutingService:
                 )
                 alternatives.append(alternative)
                 route_payloads[route_id] = candidate
+            if suspicious_routes:
+                diagnostic = "suspicious_routes=" + ",".join(suspicious_routes[:6])
+                log_provider_event(
+                    logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000),
+                    category="suspicious_response", upstream_status=getattr(response, "status_code", None),
+                    diagnostic=diagnostic, level=logging.WARNING,
+                )
+                raise RoutingProviderError(reason="suspicious_route")
             if not alternatives:
                 raise ValueError
             primary = alternatives[0]
             route = route_payloads[primary.route_id]
+            log_provider_event(
+                logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000),
+                category="success", upstream_status=getattr(response, "status_code", None),
+                diagnostic=f"route_count={len(alternatives)}",
+            )
             return TravelEstimate(
                 duration_seconds=primary.duration_seconds,
                 duration_minutes=primary.duration_minutes,
@@ -463,7 +566,10 @@ class TomTomRoutingService:
                 selected_route_id=primary.route_id,
                 alternatives=alternatives,
             )
+        except RoutingProviderError:
+            raise
         except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
+            log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category="invalid_response", upstream_status=getattr(response, "status_code", None), exception_class=type(exc).__name__, level=logging.WARNING)
             raise RoutingProviderError from exc
 
 

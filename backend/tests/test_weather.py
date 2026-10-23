@@ -71,6 +71,24 @@ def test_weather_thresholds_produce_advisories_for_each_affected_endpoint() -> N
     assert result.origin_weather.wind_speed_kmh == 55
 
 
+@pytest.mark.parametrize("selected_endpoint", ["origin", "destination"])
+def test_weather_can_assess_either_selected_endpoint_independently(selected_endpoint: str) -> None:
+    when = datetime.now(timezone.utc) + timedelta(hours=3)
+    client = MockWeatherClient(forecast(when, rain=8))
+    point = LocationSelection(name=selected_endpoint.title(), latitude=14, longitude=121)
+    result = OpenMeteoWeatherService(client).assess(
+        point if selected_endpoint == "origin" else None,
+        point if selected_endpoint == "destination" else None,
+        when,
+        when,
+    )
+    assert result.status == "available"
+    assert result.origin_weather is not None if selected_endpoint == "origin" else result.origin_weather is None
+    assert result.destination_weather is not None if selected_endpoint == "destination" else result.destination_weather is None
+    assert {item.endpoint for item in result.advisories} == {selected_endpoint}
+    assert client.calls == 1
+
+
 @pytest.mark.parametrize(
     ("code", "condition"),
     [
@@ -205,10 +223,13 @@ def test_endpoint_timeout_is_unavailable_and_never_applies_unverified_buffer(
 
     result = OpenMeteoWeatherService(client).assess(origin, destination, origin_time, destination_time)
 
-    assert result.status == "unavailable"
-    assert result.advisories == []
-    assert result.retrieved_at is None
-    assert result.origin_weather is None and result.destination_weather is None
+    assert result.status == "available"
+    assert ({item.endpoint for item in result.advisories} == {"origin"}) is (failed_point == "destination")
+    assert result.retrieved_at is not None
+    assert (result.origin_weather is None) is (failed_point == "origin")
+    assert (result.destination_weather is None) is (failed_point == "destination")
+    assert result.origin_status == ("unavailable" if failed_point == "origin" else "available")
+    assert result.destination_status == ("unavailable" if failed_point == "destination" else "available")
     assert result._diagnostic is not None
     assert result._diagnostic.reason == "provider_timeout"
     assert result._diagnostic.failed_point == failed_point
@@ -227,7 +248,7 @@ def test_weather_assessment_can_recover_on_a_later_attempt_without_reusing_faile
     failed = service.assess(origin, destination, origin_time, destination_time, assessment_pass=1)
     recovered = service.assess(origin, destination, origin_time, destination_time, assessment_pass=2)
 
-    assert failed.status == "unavailable"
+    assert failed.status == "available"
     assert failed.advisories == []
     assert failed._diagnostic is not None and failed._diagnostic.reason == "provider_timeout"
     assert failed._diagnostic.failed_point == "origin"
@@ -316,20 +337,31 @@ def test_unsupported_forecast_time_has_specific_safe_reason(
     monkeypatch.setattr(weather_service, "datetime", FrozenDateTime)
     departure = fixed_now + timedelta(hours=departure_offset)
     arrival = fixed_now + timedelta(hours=arrival_offset)
-    client = MockWeatherClient(forecast(departure))
+    departure_hour = departure.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    arrival_hour = arrival.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    client = MockWeatherClient({"hourly": {
+        "time": list(dict.fromkeys([departure_hour.strftime("%Y-%m-%dT%H:00"), arrival_hour.strftime("%Y-%m-%dT%H:00")])),
+        "precipitation": [0, 0], "snowfall": [0, 0], "wind_speed_10m": [0, 0], "weather_code": [3, 3],
+    }})
     point = LocationSelection(name="Private place", latitude=14, longitude=121)
 
     result = OpenMeteoWeatherService(client).assess(point, point, departure, arrival, assessment_pass=1)
 
     diagnostic = result._diagnostic
-    assert result.status == "unavailable"
-    assert diagnostic is not None
-    assert diagnostic.reason == "unsupported_forecast_time"
-    assert diagnostic.rejection_reason == expected_reason
-    assert diagnostic.current_utc_hour == "2026-10-15T12:00Z"
-    assert diagnostic.assessment_pass == 1
-    assert diagnostic.failed_point is None
-    assert client.calls == 0
+    if expected_reason == "departure_before_current_hour_and_arrival_beyond_forecast_horizon":
+        assert result.status == "unavailable"
+        assert diagnostic is not None
+        assert diagnostic.reason == "unsupported_forecast_time"
+        assert diagnostic.rejection_reason == expected_reason
+        assert diagnostic.current_utc_hour == "2026-10-15T12:00Z"
+        assert diagnostic.assessment_pass == 1
+        assert diagnostic.failed_point is None
+    else:
+        assert result.status == "available"
+        assert diagnostic is None
+        assert result.origin_status == ("unavailable" if expected_reason == "departure_before_current_hour" else "available")
+        assert result.destination_status == ("unavailable" if expected_reason == "arrival_beyond_forecast_horizon" else "available")
+    assert client.calls == (0 if expected_reason == "departure_before_current_hour_and_arrival_beyond_forecast_horizon" else 1)
 
 
 @pytest.mark.parametrize(

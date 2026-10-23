@@ -5,7 +5,7 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from models import Base, Schedule, ScheduleStatus, TimeIntent
+from models import Base, Schedule, ScheduleStatus, TimeIntent, location_pair_signature
 from schemas import ScheduleCreate, ScheduleResponse, ScheduleUpdate, TravelEstimate
 
 
@@ -56,6 +56,7 @@ def test_schedule_model_persists_fields_and_defaults_in_sqlite() -> None:
             values = ScheduleCreate.model_validate(valid_schedule_payload()).model_dump()
             values.pop("continue_without_route", None)
             values.pop("selected_route_id", None)
+            values.pop("route_outcome", None)
             schedule = Schedule(clerk_user_id="user_123", **values)
             session.add(schedule)
             session.commit()
@@ -68,6 +69,20 @@ def test_schedule_model_persists_fields_and_defaults_in_sqlite() -> None:
             assert schedule.clerk_user_id == "user_123"
     finally:
         engine.dispose()
+
+
+def test_persisted_no_route_result_is_scoped_to_the_exact_selected_pair() -> None:
+    origin = {"name": "Tokyo", "latitude": 35.68, "longitude": 139.76}
+    destination = {"name": "Manila", "latitude": 14.59, "longitude": 120.98}
+    schedule = Schedule(
+        clerk_user_id="user_123", title="Trip", normalized_title="trip",
+        origin_location=origin, location=destination,
+        route_status="no_drivable_route",
+        route_location_signature=location_pair_signature(origin, destination),
+    )
+    assert schedule.route_availability == "no_drivable_route"
+    schedule.location = {"name": "Osaka", "latitude": 34.69, "longitude": 135.50}
+    assert schedule.route_availability is None
 
 
 def test_create_schema_validates_enums_timezone_and_durations() -> None:
