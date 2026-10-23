@@ -38,3 +38,12 @@ The configured natural-language extraction request returned HTTP 503 Service Una
 The controlled browser screenshot tool captured the authenticated dashboard, extraction 503 state, saved schedule/calculated-times state, cancellation state, and post-sign-out protected-route redirect during this pass. The tool did not expose persistent workspace paths for those live captures. Previously persisted screenshots remain available at [backend-status-connected.png](./backend-status-connected.png) and [backend-status-unavailable-controlled.png](./backend-status-unavailable-controlled.png).
 
 No application code was modified during this browser-testing pass. The disposable schedule was cancelled before finishing.
+
+## Follow-up: authenticated dashboard check
+
+Date: 2026-10-23 (Asia/Manila)
+
+- The first Playwright navigation to `/dashboard` in a fresh isolated Chrome context redirected to the Clerk sign-in page. No sign-in retries, token interception, credential entry, or authentication bypass were performed by automation.
+- The user signed in manually in that same controlled Chrome window. The dashboard then loaded and showed the authenticated identity success state. The user ID is intentionally omitted from this report.
+- The dashboard identity component obtains the Clerk session token and calls the backend `GET /auth/me` endpoint with a Bearer header. It only displays the verified-identity state after an HTTP-success response and a valid identity payload. The rendered success state therefore confirms that an authenticated API request worked; the exact HTTP status was not captured.
+- Playwright performed the initial navigation. After the manual sign-in, the Playwright process handle was not available for instrumentation in this session, so the dashboard state was verified through the controlled window's accessibility tree. No further feature flows were run.
