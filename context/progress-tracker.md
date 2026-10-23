@@ -1,5 +1,13 @@
 ## Current Progress
 
+### Next.js security patch upgrade (16.4.0 to 16.4.2)
+
+- Updated the root npm dependencies `next` and `eslint-config-next` from 16.4.0 to the exact target 16.4.2 and refreshed `package-lock.json`.
+- Added `experimental.agentUpgrade: "security"` to `next.config.ts`; target 16.4.2 includes this option in its runtime schema and TypeScript config types. Preserved the existing `agentFeedback` setting and unrelated configuration.
+- Completed in a separate Git worktree on branch `upgrade/next-16.4.2-security`. Duplicate app/history checks found no equivalent work. The GitHub open-PR check was attempted but could not connect to GitHub.
+- Verification: clean `npm ci` passed on retry after the sandbox blocked a package lifecycle process with `spawn EPERM`; `npm exec next -- --version` reported **16.4.2**; `npm run build`, `npm run lint`, `npm run test:frontend`, `npm ls next eslint-config-next @clerk/nextjs`, and `git diff --check` passed. npm reported five high-severity audit findings across the installed dependency tree; no audit remediation was attempted as part of this version-only upgrade.
+- The GitHub provider lookup and PR recheck are unavailable in this environment, so no PR was published. Open PR status could not be confirmed.
+
 ### External provider reliability improvements
 
 - Added request correlation middleware with safe `X-Request-ID` response propagation and sanitized provider diagnostics for OpenRouter, Open-Meteo, and TomTom. Logs include provider, operation, elapsed milliseconds, category, exception class, upstream status when available, and correlation ID; they do not include secrets, prompts, authorization headers, or location payloads.
