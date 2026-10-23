@@ -218,10 +218,19 @@ def get_route_options(payload: RouteOptionsRequest, user_id: CurrentUser, routin
     except RoutingProviderError as exc:
         if exc.reason == "no_route":
             raise HTTPException(status_code=422, detail={"code": "no_drivable_route", "message": "TomTom could not find a drivable route between these locations. Check the selected places and try again."}) from exc
+        if exc.reason == "map_matching_failure":
+            endpoint = f"the {exc.endpoint}" if exc.endpoint else "one of the selected locations"
+            raise HTTPException(status_code=422, detail={"code": "location_not_matched", "message": f"TomTom could not match {endpoint} to its map. Review the origin and destination, then choose a more specific place or correct the location."}) from exc
+        if exc.reason == "invalid_request":
+            raise HTTPException(status_code=422, detail={"code": "route_request_invalid", "message": "TomTom rejected the route request. Review the selected locations and route time, then try again."}) from exc
         if exc.reason == "suspicious_route":
             raise HTTPException(status_code=422, detail={"code": "suspicious_route", "message": "TomTom returned route details that look implausible for these locations. Verify the selected places or retry. This estimate was not used."}) from exc
         if exc.reason in {"timeout", "compute_limit"}:
             raise HTTPException(status_code=504, detail="TomTom took too long to calculate these routes. Try again or save without a route estimate.") from exc
+        if exc.reason == "rate_limited":
+            raise HTTPException(status_code=429, detail="TomTom is rate limiting route requests. Wait briefly, then retry or save without a route estimate.") from exc
+        if exc.reason == "auth_error":
+            raise HTTPException(status_code=503, detail="TomTom routing is temporarily unavailable because the provider rejected its server configuration.") from exc
         raise HTTPException(status_code=502, detail="TomTom could not return valid route options. Try again or save without a route estimate.") from exc
     except (ValueError, RoutingProviderConfigurationError) as exc:
         raise HTTPException(status_code=422, detail="A future target time and valid route locations are required to find routes.") from exc
@@ -448,7 +457,11 @@ def create_schedule(payload: ScheduleCreate, db: DbSession, user_id: CurrentUser
                     ) from exc
                 if selected_route_id is not None:
                     db.rollback()
-                    provider_status = 504 if exc.reason in {"timeout", "compute_limit"} else 502
+                    if exc.reason == "map_matching_failure":
+                        raise HTTPException(status_code=422, detail={"code": "location_not_matched", "message": "TomTom could not match one of the selected locations to its map. Review the origin and destination and choose more specific places; the schedule was not saved."}) from exc
+                    if exc.reason == "invalid_request":
+                        raise HTTPException(status_code=422, detail={"code": "route_request_invalid", "message": "TomTom rejected the route request. Review the selected locations and route time; the schedule was not saved."}) from exc
+                    provider_status = 504 if exc.reason in {"timeout", "compute_limit"} else 429 if exc.reason == "rate_limited" else 503 if exc.reason == "auth_error" else 502
                     message = "TomTom could not confirm your selected route. Refresh the route options and choose again; the schedule was not saved."
                     raise HTTPException(status_code=provider_status, detail=message) from exc
                 schedule.travel_estimate = None
@@ -638,6 +651,10 @@ def refresh_travel_estimate(
                     "Try different locations or enter the travel duration manually. Your saved estimate was kept."
                 ),
             ) from exc
+        if isinstance(exc, RoutingProviderError) and exc.reason == "rate_limited":
+            raise HTTPException(status_code=429, detail="TomTom is rate limiting route requests. Try again later. Your saved estimate was kept.") from exc
+        if isinstance(exc, RoutingProviderError) and exc.reason == "auth_error":
+            raise HTTPException(status_code=503, detail="TomTom routing is temporarily unavailable because the provider rejected its server configuration. Your saved estimate was kept.") from exc
         if isinstance(exc, RoutingProviderError) and exc.reason == "no_route":
             raise HTTPException(
                 status_code=422,
@@ -649,6 +666,10 @@ def refresh_travel_estimate(
                     ),
                 },
             ) from exc
+        if isinstance(exc, RoutingProviderError) and exc.reason == "map_matching_failure":
+            raise HTTPException(status_code=422, detail={"code": "location_not_matched", "message": "TomTom could not match one of the selected locations to its map. Review the origin and destination and choose more specific places. Your saved estimate was kept."}) from exc
+        if isinstance(exc, RoutingProviderError) and exc.reason == "invalid_request":
+            raise HTTPException(status_code=422, detail={"code": "route_request_invalid", "message": "TomTom rejected the route request. Review the selected locations and route time. Your saved estimate was kept."}) from exc
         if isinstance(exc, RoutingProviderError) and exc.reason == "suspicious_route":
             raise HTTPException(
                 status_code=422,

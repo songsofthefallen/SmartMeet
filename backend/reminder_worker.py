@@ -43,6 +43,14 @@ class ReminderMessage:
     scheduled_for: datetime
     timezone: str
     attempt_count: int
+    title: str = ""
+    destination: str | None = None
+    target_datetime: datetime | None = None
+    time_intent: str = "arrival"
+    preparation_duration_minutes: int | None = None
+    travel_duration_minutes: int | None = None
+    departure_datetime: datetime | None = None
+    arrival_datetime: datetime | None = None
 
 
 ReminderHandler = Callable[[ReminderMessage], bool]
@@ -159,6 +167,14 @@ def _clear_claim(reminder: Reminder) -> None:
     reminder.lease_expires_at = None
 
 
+def _destination_label(location: dict | None) -> str | None:
+    if not isinstance(location, dict):
+        return None
+    parts = [location.get(key) for key in ("name", "locality", "region")]
+    labels = list(dict.fromkeys(value.strip() for value in parts if isinstance(value, str) and value.strip()))
+    return ", ".join(labels)[:250] or None
+
+
 def _safe_error(exc: Exception) -> str:
     # Never store provider/user exception text; it can contain payloads or secrets.
     kind = type(exc).__name__
@@ -191,6 +207,13 @@ def process_claim(
             reminder.next_attempt_at = None
             db.commit()
             return "cancelled"
+        schedule = db.get(Schedule, reminder.schedule_id)
+        if schedule is None:
+            reminder.status = ReminderStatus.CANCELLED
+            _clear_claim(reminder)
+            reminder.next_attempt_at = None
+            db.commit()
+            return "cancelled"
         message = ReminderMessage(
             id=reminder.id,
             schedule_id=reminder.schedule_id,
@@ -199,6 +222,14 @@ def process_claim(
             scheduled_for=_utc(reminder.scheduled_for),
             timezone=reminder.timezone,
             attempt_count=reminder.attempt_count,
+            title=schedule.title,
+            destination=_destination_label(schedule.location),
+            target_datetime=_utc(schedule.target_datetime),
+            time_intent=schedule.time_intent.value,
+            preparation_duration_minutes=schedule.preparation_duration_minutes,
+            travel_duration_minutes=schedule.travel_duration_minutes,
+            departure_datetime=_utc(schedule.calculated_departure_time) if schedule.calculated_departure_time else None,
+            arrival_datetime=_utc(schedule.calculated_arrival_time) if schedule.calculated_arrival_time else None,
         )
 
     try:

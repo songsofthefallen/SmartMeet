@@ -19,8 +19,8 @@ from sqlalchemy.pool import StaticPool
 
 from database import get_db
 from main import app, verify_clerk_token
-from models import Base, PushSubscription
-from push_service import PushConfigurationError, WebPushDelivery, register_subscription, remove_subscription, validate_push_configuration
+from models import Base, PushSubscription, Schedule, TimeIntent
+from push_service import PushConfigurationError, WebPushDelivery, _notification, register_subscription, remove_subscription, validate_push_configuration
 from reminder_worker import PermanentProcessingError, ReminderMessage, ReminderType, RetryableProcessingError
 
 
@@ -90,6 +90,7 @@ def test_subscription_registration_route_requires_verified_authentication(monkey
 
 def test_authenticated_test_push_uses_current_users_subscription(push_db, monkeypatch) -> None:
     configure_vapid(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "development")
     with push_db() as db:
         register_subscription(db, "user_alpha", subscription())
         register_subscription(db, "user_beta", subscription("https://push.example.net/send/other"))
@@ -101,11 +102,50 @@ def test_authenticated_test_push_uses_current_users_subscription(push_db, monkey
         return types.SimpleNamespace(status_code=201)
 
     monkeypatch.setitem(sys.modules, "pywebpush", types.SimpleNamespace(webpush=fake_webpush, WebPushException=type("WebPushException", (Exception,), {})))
-    response = TestClient(app).post("/push/test")
+    response = TestClient(app).post("/push/test", json={})
     assert response.status_code == 200
     assert response.json() == {"accepted": True}
     assert len(sent) == 1
-    assert json.loads(sent[0]["data"])["title"] == "Deadline Notifier test"
+    assert json.loads(sent[0]["data"])["title"] == "SmartMeet test notification"
+    assert json.loads(sent[0]["data"])["body"] == "This is a test notification from your SmartMeet settings."
+
+
+def test_test_push_schedule_target_is_owner_scoped(push_db, monkeypatch) -> None:
+    configure_vapid(monkeypatch)
+    monkeypatch.setenv("APP_ENV", "development")
+    with push_db() as db:
+        for user_id, title in (("user_alpha", "Alpha schedule"), ("user_beta", "Beta schedule")):
+            db.add(Schedule(
+                clerk_user_id=user_id, title=title, normalized_title=title.casefold(),
+                time_intent=TimeIntent.ARRIVAL, target_datetime=datetime(2026, 10, 23, 5, tzinfo=timezone.utc),
+                timezone="Asia/Manila",
+            ))
+        register_subscription(db, "user_alpha", subscription())
+        db.commit()
+        alpha_id = db.scalar(select(Schedule.id).where(Schedule.clerk_user_id == "user_alpha"))
+        beta_id = db.scalar(select(Schedule.id).where(Schedule.clerk_user_id == "user_beta"))
+    sent = []
+
+    def fake_webpush(**kwargs):
+        sent.append(json.loads(kwargs["data"]))
+        return types.SimpleNamespace(status_code=201)
+
+    monkeypatch.setitem(sys.modules, "pywebpush", types.SimpleNamespace(webpush=fake_webpush, WebPushException=type("WebPushException", (Exception,), {})))
+    client = TestClient(app)
+    assert client.post("/push/test", json={"schedule_id": beta_id}).status_code == 404
+    accepted = client.post("/push/test", json={"schedule_id": alpha_id})
+    assert accepted.status_code == 200 and accepted.json() == {"accepted": True}
+    assert len(sent) == 1
+    assert sent[0]["url"] == f"/schedules?open={alpha_id}"
+    assert sent[0]["scheduleId"] == str(alpha_id)
+
+
+def test_test_push_requires_verified_authentication(push_db, monkeypatch) -> None:
+    app.dependency_overrides.clear()
+    monkeypatch.setenv("CLERK_JWT_KEY", "configured")
+    monkeypatch.setenv("CLERK_ISSUER", "https://issuer.example")
+    response = TestClient(app).post("/push/test", json={})
+    assert response.status_code == 401
 
 
 def test_authenticated_routes_register_and_remove_only_the_callers_endpoint(push_db) -> None:
@@ -122,7 +162,7 @@ def test_authenticated_routes_register_and_remove_only_the_callers_endpoint(push
 
 
 def test_authenticated_test_push_without_subscription_returns_conflict(push_db) -> None:
-    response = TestClient(app).post("/push/test")
+    response = TestClient(app).post("/push/test", json={})
     assert response.status_code == 409
 
 
@@ -198,10 +238,91 @@ def test_delivery_sends_type_specific_payload_and_returns_on_provider_acceptance
     message = ReminderMessage(7, 2, "user_alpha", ReminderType.WAKE, datetime(2026, 10, 19, 1, tzinfo=timezone.utc), "Asia/Manila", 1)
     assert WebPushDelivery(push_db)(message) is True
     sent = json.loads(captured["data"])
-    assert sent["title"] == "Wake-up time"
+    assert sent["title"] == "Get ready: your event"
     assert sent["tag"] == "reminder-7"
     assert captured["vapid_claims"] == {"sub": "mailto:ops@example.net"}
     assert captured["timeout"] == 10
+
+
+def test_notification_uses_schedule_details_and_formats_event_timezone(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+    message = ReminderMessage(
+        11, 42, "user_alpha", ReminderType.WAKE,
+        datetime(2026, 10, 23, 5, tzinfo=timezone.utc), "Asia/Manila", 1,
+        title="Team meeting", destination="Makati, Manila",
+        target_datetime=datetime(2026, 10, 23, 5, tzinfo=timezone.utc),
+        departure_datetime=datetime(2026, 10, 23, 4, 15, tzinfo=timezone.utc),
+        time_intent="arrival", preparation_duration_minutes=45, travel_duration_minutes=30,
+    )
+    payload = _notification(message)
+    assert payload["title"] == "Get ready: Team meeting"
+    assert payload["body"] == "Leave at 12:15 PM · Makati, Manila"
+    assert payload["url"] == "/schedules?open=42"
+    assert payload["scheduleId"] == "42" and payload["reminderType"] == "wake"
+
+
+def test_notification_omits_missing_schedule_values_and_does_not_invent_departure(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+    message = ReminderMessage(
+        12, 43, "user_alpha", ReminderType.WAKE,
+        datetime(2026, 10, 23, 5, tzinfo=timezone.utc), "Asia/Manila", 1,
+        target_datetime=datetime(2026, 10, 23, 5, tzinfo=timezone.utc),
+        time_intent="arrival",
+    )
+    payload = _notification(message)
+    assert payload["body"] == "Arrive by 1:00 PM"
+    assert "leave at" not in payload["body"].lower()
+
+
+def test_departure_reminder_wording_uses_known_duration_and_target(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+    message = ReminderMessage(
+        13, 44, "user_alpha", ReminderType.DEPARTURE,
+        datetime(2026, 10, 23, 5, tzinfo=timezone.utc), "Asia/Manila", 1,
+        title="School", destination="Quezon City", target_datetime=datetime(2026, 10, 23, 6, tzinfo=timezone.utc),
+        time_intent="arrival", travel_duration_minutes=60,
+    )
+    payload = _notification(message)
+    assert payload["title"] == "Leave now: School"
+    assert payload["body"] == "Depart at 1:00 PM · Quezon City · 60 min travel"
+
+
+def test_notification_stays_concise_with_long_event_and_destination_and_missing_times(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+    message = ReminderMessage(
+        14, 45, "user_alpha", ReminderType.WAKE,
+        datetime(2026, 10, 23, 5, tzinfo=timezone.utc), "Asia/Manila", 1,
+        title="Quarterly planning and cross-functional leadership alignment workshop",
+        destination="The exceptionally long conference venue at the eastern international business district campus",
+        time_intent="departure",
+    )
+    payload = _notification(message)
+    assert payload["title"] == "Get ready: Quarterly planning and cross-functional…"
+    assert payload["body"] == "The exceptionally long conference venue at the…"
+    assert len(payload["body"]) < 90
+    assert "None" not in payload["body"]
+
+
+def test_production_schedule_url_requires_explicit_public_https_base(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+    message = ReminderMessage(14, 45, "user_alpha", ReminderType.WAKE, datetime(2026, 10, 23, 5, tzinfo=timezone.utc), "Asia/Manila", 1)
+    with pytest.raises(PushConfigurationError, match="PUBLIC_APP_URL"):
+        _notification(message)
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://smartmeet.example")
+    assert _notification(message)["url"] == "https://smartmeet.example/schedules?open=45"
+
+
+def test_production_schedule_url_rejects_localhost(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://localhost:3000")
+    message = ReminderMessage(15, 46, "user_alpha", ReminderType.WAKE, datetime(2026, 10, 23, 5, tzinfo=timezone.utc), "Asia/Manila", 1)
+    with pytest.raises(PushConfigurationError, match="public application host"):
+        _notification(message)
 
 
 def test_delivery_confirms_after_one_device_accepts_even_if_another_is_temporarily_unavailable(push_db, monkeypatch) -> None:

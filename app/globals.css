@@ -18,6 +18,10 @@
   --state-success-bg: #ECFDF5;
   --state-warning: #92400E;
   --state-warning-bg: #FFFBEB;
+  --notification-preview-background: #111827;
+  --notification-preview-border: #374151;
+  --notification-preview-text: #F9FAFB;
+  --notification-preview-muted: #9CA3AF;
 }
 
 @theme inline {

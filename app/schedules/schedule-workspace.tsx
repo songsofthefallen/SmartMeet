@@ -200,7 +200,8 @@ export default function ScheduleWorkspace() {
       if (!mounted.current || !isCurrentGeneration(generation, loadGeneration.current)) return;
       setLoadError(false);
       setSchedules(items);
-      const first = items.find((item) => item.status === "active") ?? items[0] ?? null;
+      const requestedId = Number(new URLSearchParams(window.location.search).get("open"));
+      const first = items.find((item) => item.id === requestedId) ?? items.find((item) => item.status === "active") ?? items[0] ?? null;
       setSelectedId(first?.id ?? null);
       setSelectedSchedule(first);
       setView(first ? "detail" : "list");

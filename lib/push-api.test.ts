@@ -25,8 +25,15 @@ test("push subscription registration and removal use authenticated backend contr
 
 test("test push requires the backend acceptance response", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ accepted: true }), { status: 200 });
-  try { await scheduleApi.testPushNotification("clerk-token"); }
+  let body = "";
+  globalThis.fetch = async (_input, init) => {
+    body = String(init?.body);
+    return new Response(JSON.stringify({ accepted: true }), { status: 200 });
+  };
+  try {
+    await scheduleApi.testPushNotification("clerk-token", 42);
+    assert.deepEqual(JSON.parse(body), { schedule_id: 42 });
+  }
   finally { globalThis.fetch = originalFetch; }
 });
 

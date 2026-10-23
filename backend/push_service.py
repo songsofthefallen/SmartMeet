@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+from urllib.parse import urlsplit, urlunsplit
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from ipaddress import ip_address
@@ -139,17 +140,94 @@ def _load_subscription(row: PushSubscription) -> dict:
     return validated.model_dump()
 
 
+def _clock(value, timezone_name: str) -> str:
+    local = value.astimezone(ZoneInfo(timezone_name))
+    return local.strftime("%I:%M %p").lstrip("0")
+
+
+def _event_time(value, timezone_name: str) -> str:
+    local = value.astimezone(ZoneInfo(timezone_name))
+    date = local.strftime("%b %d").replace(" 0", " ")
+    return f"{date} at {_clock(local, timezone_name)}"
+
+
+def _public_base_url() -> str | None:
+    configured = os.getenv("PUBLIC_APP_URL", "").strip()
+    if not configured:
+        if os.getenv("APP_ENV", "development").strip().lower() == "production":
+            raise PushConfigurationError("PUBLIC_APP_URL must be configured in production")
+        return None
+    parsed = urlsplit(configured)
+    production = os.getenv("APP_ENV", "development").strip().lower() == "production"
+    try:
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        parsed.port  # Force validation of malformed port syntax.
+    except ValueError as exc:
+        raise PushConfigurationError("PUBLIC_APP_URL must be a valid public application base URL") from exc
+    if (parsed.scheme not in ({"https"} if production else {"http", "https"}) or not hostname
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise PushConfigurationError("PUBLIC_APP_URL must be a valid public application base URL")
+    if production and (hostname == "localhost" or hostname.endswith(".localhost") or hostname.endswith((".local", ".internal"))):
+        raise PushConfigurationError("PUBLIC_APP_URL must point to a public application host in production")
+    if production:
+        try:
+            if not ip_address(hostname).is_global:
+                raise PushConfigurationError("PUBLIC_APP_URL must point to a public application host in production")
+        except ValueError:
+            pass
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+
+
+def _schedule_url(schedule_id: int | None) -> str:
+    path = f"/schedules?open={schedule_id}" if schedule_id is not None else "/schedules"
+    base = _public_base_url()
+    return f"{base}{path}" if base else path
+
+
 def _notification(message: ReminderMessage) -> dict[str, str]:
-    local_time = message.scheduled_for.astimezone(ZoneInfo(message.timezone))
-    label = "Wake-up time" if message.reminder_type.value == "wake" else "Time to leave"
-    clock = local_time.strftime("%-I:%M %p") if os.name != "nt" else local_time.strftime("%I:%M %p").lstrip("0")
+    event = _short_text(message.title.strip() or "your event", 48)
+    destination = _short_text(message.destination.strip(), 56) if message.destination and message.destination.strip() else None
+    is_wake = message.reminder_type.value == "wake"
+    title = f"{'Get ready' if is_wake else 'Leave now'}: {event}"
+    details: list[str] = []
+    if is_wake:
+        if message.departure_datetime:
+            details.append(f"Leave at {_clock(message.departure_datetime, message.timezone)}")
+        elif message.time_intent == "arrival" and message.target_datetime:
+            details.append(f"Arrive by {_clock(message.target_datetime, message.timezone)}")
+    else:
+        departure_time = message.departure_datetime or message.scheduled_for
+        details.append(f"Depart at {_clock(departure_time, message.timezone)}")
+        if destination:
+            details.append(destination)
+        if message.arrival_datetime:
+            details.append(f"Arrive by {_clock(message.arrival_datetime, message.timezone)}")
+        elif message.travel_duration_minutes is not None:
+            details.append(f"{message.travel_duration_minutes} min travel")
+    if destination and is_wake:
+        details.append(destination)
+    if not details:
+        details.append("Check your schedule for details")
     return {
-        "title": label,
-        "body": f"Your scheduled time is {clock}.",
-        "url": "/schedules",
+        "title": title,
+        "body": " · ".join(details),
+        "url": _schedule_url(message.schedule_id),
         "tag": f"reminder-{message.id}",
         "reminderId": str(message.id),
+        "scheduleId": str(message.schedule_id),
+        "reminderType": message.reminder_type.value,
     }
+
+
+def _short_text(value: str, limit: int) -> str:
+    value = " ".join(value.split())
+    if len(value) <= limit:
+        return value
+    shortened = value[:limit - 1].rstrip()
+    word_boundary = shortened.rfind(" ")
+    if word_boundary > limit // 2:
+        shortened = shortened[:word_boundary]
+    return f"{shortened}…"
 
 
 class WebPushDelivery:
@@ -161,14 +239,18 @@ class WebPushDelivery:
     def __call__(self, message: ReminderMessage) -> bool:
         return self._send(message.clerk_user_id, _notification(message))
 
-    def send_test(self, user_id: str) -> bool:
+    def send_test(self, user_id: str, schedule_id: int | None = None) -> bool:
         """Send a one-off smoke test without creating or changing a reminder."""
-        return self._send(user_id, {
-            "title": "Deadline Notifier test",
-            "body": "Push notifications are set up correctly.",
-            "url": "/schedules",
+        notification = {
+            "title": "SmartMeet test notification",
+            "body": "This is a test notification from your SmartMeet settings.",
+            "url": _schedule_url(schedule_id),
             "tag": "push-test",
-        })
+        }
+        if schedule_id is not None:
+            notification["scheduleId"] = str(schedule_id)
+            notification["reminderType"] = "test"
+        return self._send(user_id, notification)
 
     def _send(self, user_id: str, notification: dict[str, str]) -> bool:
         try:

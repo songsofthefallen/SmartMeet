@@ -285,3 +285,9 @@
 - Context: VAPID or subscription-encryption configuration errors discovered during delivery could make a reminder permanently fail, and one malformed encrypted subscription could abort delivery to every device for that user.
 - Decision: Validate worker VAPID key pairing, subject URI, and Fernet key before opening the worker loop. Reject malformed browser key material at API validation and skip malformed stored subscriptions independently, logging only a subscription ID and fixed diagnostic category. Keep push acceptance behavior unchanged.
 - Tradeoffs: A worker with incomplete push configuration exits until corrected; it does not consume attempts or fail queued reminders. Damaged subscriptions remain stored for diagnosis and are ignored until repaired or removed. No schema or migration change.
+
+## DEC-048 - Keep native reminder text concise
+- Status: Confirmed
+- Context: Chrome and Windows control native notification layout and can clip long bodies; detailed schedule context is available after opening the linked schedule.
+- Decision: Put the event name and action in the title. Keep the body to the known departure time and destination for wake reminders; for leave reminders include destination and, when available, arrival time or travel duration. Omit unknown values, cap long labels at word boundaries, and show only the same title/body in Settings with an approximate-layout note.
+- Tradeoffs: Preparation duration and other schedule fields remain on the schedule page instead of being repeated in the native notification. The preview cannot guarantee the final platform layout or display.

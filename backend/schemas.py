@@ -454,3 +454,8 @@ class PushSubscriptionCreate(BaseModel):
 class PushSubscriptionDelete(BaseModel):
     model_config = ConfigDict(extra="forbid")
     endpoint: Annotated[str, StringConstraints(min_length=20, max_length=2048)]
+
+
+class PushTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schedule_id: int | None = Field(default=None, gt=0)

@@ -346,8 +346,8 @@ export const scheduleApi = {
   removePushSubscription(endpoint: string, token: string | null, options?: ScheduleRequestOptions) {
     return request<null>("/push/subscriptions", token, "DELETE", { endpoint }, undefined, options);
   },
-  testPushNotification(token: string | null, options?: ScheduleRequestOptions) {
-    return request<{ accepted: true }>("/push/test", token, "POST", undefined, (value): value is { accepted: true } => isRecord(value) && value.accepted === true, options);
+  testPushNotification(token: string | null, scheduleId?: number, options?: ScheduleRequestOptions) {
+    return request<{ accepted: true }>("/push/test", token, "POST", scheduleId ? { schedule_id: scheduleId } : {}, (value): value is { accepted: true } => isRecord(value) && value.accepted === true, options);
   },
   routeLandmarks(route_points: NonNullable<RouteAlternativeEstimate["geometry"]>, token: string | null, options?: ScheduleRequestOptions) {
     return request<RouteLandmarkEstimate[]>("/schedules/route-landmarks", token, "POST", { route_points }, isRouteLandmarks, options);

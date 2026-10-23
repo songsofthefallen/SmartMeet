@@ -5,10 +5,10 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "test:frontend": "node lib/traffic-display.test.js && node lib/suggested-times.test.js && node lib/schedule-order.test.js && node lib/schedule-warning-display.test.js && node lib/location-selection.test.js && node lib/location-aware-state.test.js && node lib/ui-utf8.test.js && node --experimental-strip-types lib/schedule-api.test.ts && node --experimental-strip-types lib/request-generation.test.ts && node --experimental-strip-types lib/assistant-autosave.test.ts && node --experimental-strip-types lib/clarification-messages.test.ts && node --experimental-strip-types lib/push-api.test.ts && node --experimental-strip-types lib/backend-status.test.ts",
+    "test:frontend": "node lib/traffic-display.test.js && node lib/suggested-times.test.js && node lib/schedule-order.test.js && node lib/schedule-warning-display.test.js && node lib/location-selection.test.js && node lib/location-aware-state.test.js && node lib/ui-utf8.test.js && node --experimental-strip-types lib/schedule-api.test.ts && node --experimental-strip-types lib/request-generation.test.ts && node --experimental-strip-types lib/assistant-autosave.test.ts && node --experimental-strip-types lib/clarification-messages.test.ts && node --experimental-strip-types lib/push-api.test.ts && node --experimental-strip-types lib/backend-status.test.ts && node --experimental-strip-types app/dashboard/notification-preview.test.ts && node public/service-worker.test.mjs",
     "test:e2e": "playwright test",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint --ignore-pattern=.worktrees/**"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.13",

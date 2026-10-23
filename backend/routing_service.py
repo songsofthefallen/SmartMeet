@@ -3,6 +3,7 @@
 import math
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -376,29 +377,68 @@ class RoutingProviderConfigurationError(Exception):
 class RoutingProviderError(Exception):
     """A route could not be obtained or validated."""
 
-    def __init__(self, *args: object, reason: str = "provider_error") -> None:
+    def __init__(self, *args: object, reason: str = "provider_error", diagnostic: str | None = None, endpoint: str | None = None) -> None:
         super().__init__(*args)
         self.reason = reason
+        self.diagnostic = diagnostic
+        self.endpoint = endpoint
 
 
-def _tomtom_error_reason(response: httpx.Response) -> str:
-    """Classify allowlisted provider codes without retaining raw response text."""
+_TOMTOM_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+
+
+def _safe_tomtom_error(response: httpx.Response, *, secret: str | None = None) -> tuple[str, str | None, str | None]:
+    """Return a classified error and bounded diagnostic from untrusted provider data."""
     # Transport/server failures, authentication problems, and throttling say
     # nothing about whether a drivable route exists.
     status_code = getattr(response, "status_code", None)
-    if status_code in {401, 403, 429} or (isinstance(status_code, int) and status_code >= 500):
-        return "provider_error"
+    if status_code in {401, 403}:
+        return "auth_error", None, None
+    if status_code == 429:
+        return "rate_limited", None, None
+    if isinstance(status_code, int) and status_code >= 500:
+        return "upstream_error", None, None
     try:
         payload = response.json()
     except (ValueError, TypeError):
-        return "provider_error"
+        return "provider_error", None, None
     detailed = payload.get("detailedError") if isinstance(payload, dict) else None
     code = detailed.get("code") if isinstance(detailed, dict) else None
+    message = detailed.get("message") if isinstance(detailed, dict) else None
+    safe_code = code if isinstance(code, str) and _TOMTOM_ERROR_CODE.fullmatch(code) else None
+    safe_message = None
+    if isinstance(message, str):
+        # Provider text is diagnostic only. Strip control characters, URLs,
+        # coordinate pairs and common credential/query-string forms.
+        cleaned = " ".join(message.split())
+        if secret:
+            cleaned = cleaned.replace(secret, "[redacted]")
+        cleaned = re.sub(r"https?://\S+|\b(?:key|api[_-]?key|subscription[_-]?key)=\S+", "[redacted]", cleaned, flags=re.I)
+        cleaned = re.sub(r"\b(?:api\s+key|subscription\s+key|key)\s*[:=]\s*\S+", "[redacted]", cleaned, flags=re.I)
+        cleaned = re.sub(r"(?<![A-Za-z0-9])[-+]?\d{1,3}\.\d{3,}(?:\s*[,; ]\s*[-+]?\d{1,3}\.\d{3,})?(?![A-Za-z0-9])", "[location]", cleaned)
+        cleaned = "".join(char for char in cleaned if char.isprintable())
+        safe_message = cleaned[:240] or None
+    diagnostic = f"provider_code={safe_code or 'unknown'}" + (f" provider_message={safe_message}" if safe_message else "")
+    endpoint = None
+    if code == "MAP_MATCHING_FAILURE" and isinstance(message, str):
+        if re.search(r"\b(origin|start(?:ing)? point|waypoint\s*0|location\s*0)\b", message, re.I):
+            endpoint = "origin"
+        elif re.search(r"\b(destination|end point|waypoint\s*1|location\s*1)\b", message, re.I):
+            endpoint = "destination"
     if code == "COMPUTE_TIME_LIMIT_EXCEEDED":
-        return "compute_limit"
-    if isinstance(code, str) and code in {"NO_ROUTE_FOUND", "ROUTE_NOT_FOUND"}:
-        return "no_route"
-    return "provider_error"
+        return "compute_limit", diagnostic, endpoint
+    if code == "NO_ROUTE_FOUND":
+        return "no_route", diagnostic, endpoint
+    if code == "MAP_MATCHING_FAILURE":
+        return "map_matching_failure", diagnostic, endpoint
+    if code == "BAD_INPUT":
+        return "invalid_request", diagnostic, endpoint
+    return "provider_error", diagnostic, endpoint
+
+
+def _tomtom_error_reason(response: httpx.Response) -> str:
+    """Compatibility helper for callers/tests needing only the error category."""
+    return _safe_tomtom_error(response)[0]
 
 
 class TomTomRoutingService:
@@ -455,8 +495,9 @@ class TomTomRoutingService:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category=_tomtom_error_reason(response), upstream_status=getattr(response, "status_code", getattr(exc.response, "status_code", None)), exception_class=type(exc).__name__, level=logging.WARNING)
-            raise RoutingProviderError(reason=_tomtom_error_reason(response)) from exc
+            reason, diagnostic, endpoint = _safe_tomtom_error(response, secret=self.api_key)
+            log_provider_event(logger, provider="tomtom", operation="route", elapsed_ms=round((perf_counter() - started) * 1000), category=reason, upstream_status=getattr(response, "status_code", getattr(exc.response, "status_code", None)), exception_class=type(exc).__name__, diagnostic=diagnostic, level=logging.WARNING)
+            raise RoutingProviderError(reason=reason, diagnostic=diagnostic, endpoint=endpoint) from exc
         retrieved_at = datetime.now(timezone.utc)
         try:
             payload = response.json()

@@ -743,7 +743,29 @@ def test_route_options_reports_suspicious_response_separately_from_no_route(api_
     assert saved.json()["travel_estimate"] is None
     assert saved.json()["travel_duration_minutes"] is None
     app.dependency_overrides.pop(get_routing_service, None)
-    app.dependency_overrides.pop(get_weather_service, None)
+
+
+@pytest.mark.parametrize(
+    ("reason", "status", "expected_code"),
+    [
+        ("no_route", 422, "no_drivable_route"),
+        ("map_matching_failure", 422, "location_not_matched"),
+        ("invalid_request", 422, "route_request_invalid"),
+        ("rate_limited", 429, None),
+        ("upstream_error", 502, None),
+    ],
+)
+def test_route_options_preserves_provider_error_categories(
+    api_db: None, signing_key: str, reason: str, status: int, expected_code: str | None,
+) -> None:
+    app.dependency_overrides[get_routing_service] = lambda: StubRouting(RoutingProviderError(reason=reason))
+    schedule = route_payload()
+    request = {key: schedule[key] for key in ("origin_location", "location", "time_intent", "target_datetime")}
+    response = TestClient(app).post("/schedules/route-options", headers=bearer(signing_key), json=request)
+    assert response.status_code == status
+    if expected_code:
+        assert response.json()["detail"]["code"] == expected_code
+    app.dependency_overrides.pop(get_routing_service, None)
 
 
 def test_schedule_api_round_trips_unicode_location_text_as_utf8(api_db: None, signing_key: str) -> None:
@@ -1214,20 +1236,30 @@ def test_tomtom_classifies_allowlisted_computation_errors_without_exposing_paylo
     assert "private provider response" not in str(error.value)
 
 
-@pytest.mark.parametrize("status_code", [401, 403, 429, 500, 502, 504])
-def test_tomtom_transient_and_configuration_statuses_never_mean_no_route(status_code: int) -> None:
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [(401, "auth_error"), (403, "auth_error"), (429, "rate_limited"), (500, "upstream_error"), (502, "upstream_error"), (504, "upstream_error")],
+)
+def test_tomtom_transient_and_configuration_statuses_never_mean_no_route(status_code: int, expected: str) -> None:
     request = httpx.Request("GET", "https://api.tomtom.com/routing/1/calculateRoute")
     response = httpx.Response(
         status_code,
         request=request,
         json={"detailedError": {"code": "NO_ROUTE_FOUND"}},
     )
-    assert _tomtom_error_reason(response) == "provider_error"
+    assert _tomtom_error_reason(response) == expected
 
 
 @pytest.mark.parametrize(
     ("status_code", "code", "expected"),
-    [(400, "NO_ROUTE_FOUND", "no_route"), (400, "INVALID_PARAMETER", "provider_error"), (400, "COMPUTE_TIME_LIMIT_EXCEEDED", "compute_limit")],
+    [
+        (400, "NO_ROUTE_FOUND", "no_route"),
+        (400, "MAP_MATCHING_FAILURE", "map_matching_failure"),
+        (400, "BAD_INPUT", "invalid_request"),
+        (400, "INVALID_PARAMETER", "provider_error"),
+        (400, "COMPUTE_TIME_LIMIT_EXCEEDED", "compute_limit"),
+        (400, "ROUTE_NOT_FOUND", "provider_error"),
+    ],
 )
 def test_tomtom_http_400_uses_provider_error_code_not_status_alone(
     status_code: int, code: str, expected: str,
@@ -1235,3 +1267,32 @@ def test_tomtom_http_400_uses_provider_error_code_not_status_alone(
     request = httpx.Request("GET", "https://api.tomtom.com/routing/1/calculateRoute")
     response = httpx.Response(status_code, request=request, json={"detailedError": {"code": code}})
     assert _tomtom_error_reason(response) == expected
+
+
+@pytest.mark.parametrize("body", [b"not-json", b"<html>upstream error</html>", b'{"detailedError":[]}'])
+def test_tomtom_malformed_or_unexpected_error_body_is_not_no_route(body: bytes) -> None:
+    request = httpx.Request("GET", "https://api.tomtom.com/routing/1/calculateRoute")
+    response = httpx.Response(400, request=request, content=body, headers={"content-type": "text/html"})
+    assert _tomtom_error_reason(response) == "provider_error"
+
+
+def test_tomtom_error_diagnostic_is_bounded_and_redacts_secrets_and_coordinates() -> None:
+    from routing_service import _safe_tomtom_error
+
+    request = httpx.Request("GET", "https://api.tomtom.com/routing/1/calculateRoute")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={"detailedError": {
+            "code": "MAP_MATCHING_FAILURE",
+            "message": "Origin at 121.057900, 14.582000 failed; key=SECRET; see https://provider.invalid/debug",
+        }},
+    )
+    reason, diagnostic, endpoint = _safe_tomtom_error(response)
+    assert reason == "map_matching_failure"
+    assert diagnostic is not None
+    assert "provider_code=MAP_MATCHING_FAILURE" in diagnostic
+    assert "[location]" in diagnostic and "[redacted]" in diagnostic
+    assert "SECRET" not in diagnostic and "121.057900" not in diagnostic and "https://" not in diagnostic
+    assert len(diagnostic) <= 320
+    assert endpoint == "origin"
