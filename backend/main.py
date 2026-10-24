@@ -86,8 +86,10 @@ from routers.extraction import router as extraction_router
 from routers.locations import router as locations_router
 from routers.schedules import router as schedules_router
 from routers.push import router as push_router
+from routers.saved_places import router as saved_places_router
 
 app.include_router(extraction_router)
 app.include_router(locations_router)
 app.include_router(schedules_router)
 app.include_router(push_router)
+app.include_router(saved_places_router)

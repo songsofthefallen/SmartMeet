@@ -50,6 +50,32 @@ class PushSubscription(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp())
 
 
+class SavedPlace(Base):
+    """A confirmed location snapshot saved by a Clerk user."""
+
+    __tablename__ = "saved_places"
+    __table_args__ = (
+        Index("ix_saved_places_user_alias", "clerk_user_id", "alias"),
+        CheckConstraint("latitude >= -90 AND latitude <= 90", name="ck_saved_places_latitude"),
+        CheckConstraint("longitude >= -180 AND longitude <= 180", name="ck_saved_places_longitude"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    clerk_user_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    alias: Mapped[str] = mapped_column(String(100), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    latitude: Mapped[float] = mapped_column(nullable=False)
+    longitude: Mapped[float] = mapped_column(nullable=False)
+    formatted_address: Mapped[str | None] = mapped_column(String(500))
+    locality: Mapped[str | None] = mapped_column(String(120))
+    region: Mapped[str | None] = mapped_column(String(120))
+    country: Mapped[str | None] = mapped_column(String(120))
+    timezone: Mapped[str | None] = mapped_column(String(64))
+    location_source: Mapped[str] = mapped_column(String(32), nullable=False, default="tomtom_search")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp())
+
+
 class Schedule(Base):
     """A schedule owned by a Clerk user."""
 

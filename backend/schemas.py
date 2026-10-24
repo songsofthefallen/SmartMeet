@@ -219,6 +219,67 @@ class LocationSelection(BaseModel):
     timezone: Annotated[str, StringConstraints(max_length=64)] | None = None
 
 
+class SavedPlaceFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alias: Annotated[str, StringConstraints(min_length=1, max_length=100, strip_whitespace=True)]
+    display_name: Annotated[str, StringConstraints(min_length=1, max_length=200, strip_whitespace=True)]
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    formatted_address: Annotated[str, StringConstraints(max_length=500, strip_whitespace=True)] | None = None
+    locality: Annotated[str, StringConstraints(max_length=120)] | None = None
+    region: Annotated[str, StringConstraints(max_length=120)] | None = None
+    country: Annotated[str, StringConstraints(max_length=120)] | None = None
+    timezone: Annotated[str, StringConstraints(max_length=64)] | None = None
+    location_source: Literal["tomtom_search"] = "tomtom_search"
+
+
+class SavedPlaceCreate(SavedPlaceFields):
+    pass
+
+
+class SavedPlaceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alias: Annotated[str, StringConstraints(min_length=1, max_length=100, strip_whitespace=True)] | None = None
+    display_name: Annotated[str, StringConstraints(min_length=1, max_length=200, strip_whitespace=True)] | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90, allow_inf_nan=False)
+    longitude: float | None = Field(default=None, ge=-180, le=180, allow_inf_nan=False)
+    formatted_address: Annotated[str, StringConstraints(max_length=500, strip_whitespace=True)] | None = None
+    locality: Annotated[str, StringConstraints(max_length=120)] | None = None
+    region: Annotated[str, StringConstraints(max_length=120)] | None = None
+    country: Annotated[str, StringConstraints(max_length=120)] | None = None
+    timezone: Annotated[str, StringConstraints(max_length=64)] | None = None
+    location_source: Literal["tomtom_search"] | None = None
+
+    @model_validator(mode="after")
+    def require_complete_location_if_coordinates_change(self) -> "SavedPlaceUpdate":
+        if ("latitude" in self.model_fields_set) != ("longitude" in self.model_fields_set):
+            raise ValueError("latitude and longitude must be updated together")
+        for field_name in self.model_fields_set:
+            if getattr(self, field_name) is None and field_name not in {"formatted_address", "locality", "region", "country", "timezone"}:
+                raise ValueError(f"{field_name} cannot be null")
+        return self
+
+
+class SavedPlaceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    alias: str
+    display_name: str
+    latitude: float
+    longitude: float
+    formatted_address: str | None
+    locality: str | None
+    region: str | None
+    country: str | None
+    timezone: str | None
+    location_source: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class TrafficSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     severity: Annotated[str, StringConstraints(pattern="^(little_or_no_delay|some_delay|significant_delay)$")] | None = None

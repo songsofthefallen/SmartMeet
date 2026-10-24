@@ -9,6 +9,8 @@ export type LocationSelection = {
   longitude: number;
   timezone: string | null;
 };
+export type SavedPlace = { id: number; alias: string; display_name: string; latitude: number; longitude: number; formatted_address: string | null; locality: string | null; region: string | null; country: string | null; timezone: string | null; location_source: "tomtom_search"; created_at: string; updated_at: string };
+export type SavedPlaceInput = Omit<SavedPlace, "id" | "created_at" | "updated_at">;
 export type WeatherPointForecast = {
   condition: string;
   weather_code: number;
@@ -199,6 +201,18 @@ function isLocationSearch(value: unknown): value is { results: LocationSelection
   return isRecord(value) && Array.isArray(value.results) && value.results.every(isLocation);
 }
 
+function isSavedPlace(value: unknown): value is SavedPlace {
+  return isRecord(value) && typeof value.id === "number" && typeof value.alias === "string" &&
+    typeof value.display_name === "string" && typeof value.latitude === "number" && typeof value.longitude === "number" &&
+    isNullableString(value.formatted_address) && isNullableString(value.locality) && isNullableString(value.region) &&
+    isNullableString(value.country) && isNullableString(value.timezone) && value.location_source === "tomtom_search" &&
+    typeof value.created_at === "string" && typeof value.updated_at === "string";
+}
+
+function isSavedPlaceList(value: unknown): value is SavedPlace[] {
+  return Array.isArray(value) && value.every(isSavedPlace);
+}
+
 function isNullableString(value: unknown): value is string | null {
   return typeof value === "string" || value === null;
 }
@@ -340,6 +354,18 @@ function isRouteLandmarks(value: unknown): value is RouteLandmarkEstimate[] {
 }
 
 export const scheduleApi = {
+  savedPlaces(token: string | null, options?: ScheduleRequestOptions) {
+    return request<SavedPlace[]>("/saved-places", token, "GET", undefined, isSavedPlaceList, options);
+  },
+  createSavedPlace(input: SavedPlaceInput, token: string | null, options?: ScheduleRequestOptions) {
+    return request<SavedPlace>("/saved-places", token, "POST", input, isSavedPlace, options);
+  },
+  updateSavedPlace(id: number, input: Partial<SavedPlaceInput>, token: string | null, options?: ScheduleRequestOptions) {
+    return request<SavedPlace>(`/saved-places/${id}`, token, "PATCH", input, isSavedPlace, options);
+  },
+  deleteSavedPlace(id: number, token: string | null, options?: ScheduleRequestOptions) {
+    return request<null>(`/saved-places/${id}`, token, "DELETE", undefined, undefined, options);
+  },
   registerPushSubscription(subscription: { endpoint: string; keys: { p256dh: string; auth: string } }, token: string | null, options?: ScheduleRequestOptions) {
     return request<null>("/push/subscriptions", token, "POST", subscription, undefined, options);
   },
