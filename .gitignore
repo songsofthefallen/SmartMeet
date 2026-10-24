@@ -19,6 +19,8 @@
 # next.js
 /.next/
 /out/
+/public/maplibre-gl-worker.mjs
+/public/maplibre-gl-shared.mjs
 
 # production
 /build

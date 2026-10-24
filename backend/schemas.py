@@ -231,7 +231,7 @@ class SavedPlaceFields(BaseModel):
     region: Annotated[str, StringConstraints(max_length=120)] | None = None
     country: Annotated[str, StringConstraints(max_length=120)] | None = None
     timezone: Annotated[str, StringConstraints(max_length=64)] | None = None
-    location_source: Literal["tomtom_search"] = "tomtom_search"
+    location_source: Literal["tomtom_search", "gps", "map_pin"] = "tomtom_search"
 
 
 class SavedPlaceCreate(SavedPlaceFields):
@@ -250,7 +250,7 @@ class SavedPlaceUpdate(BaseModel):
     region: Annotated[str, StringConstraints(max_length=120)] | None = None
     country: Annotated[str, StringConstraints(max_length=120)] | None = None
     timezone: Annotated[str, StringConstraints(max_length=64)] | None = None
-    location_source: Literal["tomtom_search"] | None = None
+    location_source: Literal["tomtom_search", "gps", "map_pin"] | None = None
 
     @model_validator(mode="after")
     def require_complete_location_if_coordinates_change(self) -> "SavedPlaceUpdate":
@@ -299,6 +299,15 @@ class TrafficCoordinate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
     longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
+
+
+class MapImageRequest(TrafficCoordinate):
+    latitude: float = Field(ge=-85.05112878, le=85.05112878, allow_inf_nan=False)
+    zoom: int = Field(ge=0, le=20)
+
+
+class ReverseGeocodeResponse(BaseModel):
+    address: Annotated[str, StringConstraints(min_length=1, max_length=500)] | None
 
 
 class RouteLandmarksRequest(BaseModel):

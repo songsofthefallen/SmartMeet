@@ -32,6 +32,18 @@ def test_saved_places_create_list_update_delete_and_derive_owner(api_db, signing
     assert client.get("/saved-places", headers=bearer(signing_key)).json() == []
 
 
+@pytest.mark.parametrize("source", ["gps", "map_pin"])
+def test_saved_place_can_be_saved_without_reverse_geocoded_address(api_db, signing_key: str, source: str) -> None:
+    response = TestClient(app).post("/saved-places", headers=bearer(signing_key), json=body(
+        display_name="Current location" if source == "gps" else "Map pin",
+        formatted_address=None, locality=None, region=None, country=None, timezone=None,
+        location_source=source,
+    ))
+    assert response.status_code == 201
+    assert response.json()["formatted_address"] is None
+    assert response.json()["location_source"] == source
+
+
 def test_saved_places_enforce_owner_for_list_update_and_delete(api_db, signing_key: str) -> None:
     client = TestClient(app)
     created = client.post("/saved-places", headers=bearer(signing_key), json=body()).json()

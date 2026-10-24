@@ -13,6 +13,7 @@ from location_service import (
 from main import app
 from schemas import LocationSelection, RouteLandmark, TrafficCoordinate
 from routers.locations import get_location_service
+from routers import locations as locations_router
 from routers.schedules import get_route_landmark_service
 from test_schedule_api import api_db, bearer, signing_key
 
@@ -52,6 +53,32 @@ def test_location_schema_rejects_out_of_range_and_nan_coordinates() -> None:
 
 def test_location_search_requires_authentication() -> None:
     assert TestClient(app).post("/locations/search", json={"query": "Central School"}).status_code == 401
+
+
+def test_location_map_endpoint_uses_server_map_service_and_validates_viewport(signing_key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    class StubMapService:
+        def __init__(self) -> None: pass
+        def static_image_at(self, latitude: float, longitude: float, zoom: int) -> tuple[bytes, str]:
+            assert (latitude, longitude, zoom) == (14.6, 121.0, 16)
+            return b"png", "image/png"
+
+    monkeypatch.setattr(locations_router, "TomTomMapService", StubMapService)
+    client = TestClient(app)
+    response = client.post("/locations/map-image", headers=bearer(signing_key), json={"latitude": 14.6, "longitude": 121.0, "zoom": 16})
+    assert response.status_code == 200 and response.content == b"png"
+    assert response.headers["content-type"] == "image/png"
+    assert client.post("/locations/map-image", headers=bearer(signing_key), json={"latitude": 90, "longitude": 0, "zoom": 16}).status_code == 422
+
+
+def test_location_reverse_geocode_is_optional_and_handles_failure(signing_key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    class StubSearchService:
+        api_key = "server-test-key"
+        def __init__(self) -> None: pass
+
+    monkeypatch.setattr(locations_router, "TomTomSearchService", StubSearchService)
+    monkeypatch.setattr(locations_router, "_reverse_geocode_location", lambda _point, _key: None)
+    response = TestClient(app).post("/locations/reverse-geocode", headers=bearer(signing_key), json={"latitude": 14.6, "longitude": 121.0})
+    assert response.status_code == 200 and response.json() == {"address": None}
 
 
 def test_location_search_validates_query_and_returns_multiple_candidates(

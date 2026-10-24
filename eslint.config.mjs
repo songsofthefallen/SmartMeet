@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "public/maplibre-gl-worker.mjs",
+    "public/maplibre-gl-shared.mjs",
     ".pytest_cache/**",
     ".venv/**",
     "backend/.pytest_cache/**",

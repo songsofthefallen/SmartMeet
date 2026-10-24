@@ -196,8 +196,10 @@ def _reverse_geocode_location(coordinate: TrafficCoordinate, api_key: str) -> st
         addresses = payload.get("addresses") if isinstance(payload, dict) else None
         if isinstance(addresses, list) and addresses and isinstance(addresses[0], dict):
             address = addresses[0].get("address")
-            if isinstance(address, dict) and isinstance(address.get("streetName"), str):
-                result = " ".join(address["streetName"].split())[:180] or None
+            if isinstance(address, dict):
+                candidate = address.get("freeformAddress") or address.get("streetName")
+                if isinstance(candidate, str):
+                    result = " ".join(candidate.split())[:500] or None
     except httpx.TimeoutException as exc:
         log_provider_event(logger, provider="tomtom", operation="reverse_geocode", elapsed_ms=round((perf_counter() - started) * 1000), category="timeout", exception_class=type(exc).__name__, level=logging.WARNING)
         result = None

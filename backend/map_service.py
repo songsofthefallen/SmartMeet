@@ -35,7 +35,7 @@ class TomTomMapService:
         load_dotenv()
         self.api_key = (api_key if api_key is not None else os.getenv("TOMTOM_API_KEY", "")).strip()
         if not self.api_key:
-            raise MapProviderError("Map service is not configured")
+            raise MapProviderError("Map service is not configured", reason="configuration")
 
     def static_image(self, bbox: tuple[float, float, float, float]) -> tuple[bytes, str]:
         min_lon, min_lat, max_lon, max_lat = bbox
@@ -52,6 +52,15 @@ class TomTomMapService:
         min_mercator = math.log(math.tan(math.pi / 4 + min_lat_radians / 2))
         max_mercator = math.log(math.tan(math.pi / 4 + max_lat_radians / 2))
         center_lat = (2 * math.atan(math.exp((min_mercator + max_mercator) / 2)) - math.pi / 2) * 180 / math.pi
+        return self._fetch_image(center_lon, center_lat, zoom)
+
+    def static_image_at(self, latitude: float, longitude: float, zoom: int) -> tuple[bytes, str]:
+        """Render a bounded static map viewport for the saved-place pin picker."""
+        if not -85.05112878 <= latitude <= 85.05112878 or not -180 <= longitude <= 180 or not 0 <= zoom <= 20:
+            raise ValueError("Map center or zoom is outside its valid range")
+        return self._fetch_image(longitude, latitude, zoom)
+
+    def _fetch_image(self, center_lon: float, center_lat: float, zoom: int) -> tuple[bytes, str]:
         try:
             response = httpx.get(
                 TOMTOM_STATIC_MAP_URL,

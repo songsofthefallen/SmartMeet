@@ -112,3 +112,22 @@ test("saved place CRUD uses the authenticated API and preserves its confirmed lo
     assert.equal((calls[1].body as { latitude: number }).latitude, 14.6);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("location map and reverse-geocode requests preserve map pin coordinates without an address", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: { path: string; body: unknown }[] = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ path: new URL(String(input)).pathname, body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (String(input).endsWith("/locations/map-image")) return new Response(new Blob(["png"]), { status: 200, headers: { "Content-Type": "image/png" } });
+    return new Response(JSON.stringify({ address: null }), { status: 200 });
+  };
+  try {
+    const image = await scheduleApi.savedPlaceMap({ latitude: 14.6, longitude: 121.0 }, 16, "token");
+    assert.equal(image.type, "image/png");
+    assert.deepEqual(await scheduleApi.reverseGeocode({ latitude: 14.6, longitude: 121.0 }, "token"), { address: null });
+    assert.deepEqual(calls, [
+      { path: "/locations/map-image", body: { latitude: 14.6, longitude: 121, zoom: 16 } },
+      { path: "/locations/reverse-geocode", body: { latitude: 14.6, longitude: 121 } },
+    ]);
+  } finally { globalThis.fetch = originalFetch; }
+});

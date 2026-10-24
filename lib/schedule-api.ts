@@ -9,7 +9,8 @@ export type LocationSelection = {
   longitude: number;
   timezone: string | null;
 };
-export type SavedPlace = { id: number; alias: string; display_name: string; latitude: number; longitude: number; formatted_address: string | null; locality: string | null; region: string | null; country: string | null; timezone: string | null; location_source: "tomtom_search"; created_at: string; updated_at: string };
+export type SavedPlaceSource = "tomtom_search" | "gps" | "map_pin";
+export type SavedPlace = { id: number; alias: string; display_name: string; latitude: number; longitude: number; formatted_address: string | null; locality: string | null; region: string | null; country: string | null; timezone: string | null; location_source: SavedPlaceSource; created_at: string; updated_at: string };
 export type SavedPlaceInput = Omit<SavedPlace, "id" | "created_at" | "updated_at">;
 export type WeatherPointForecast = {
   condition: string;
@@ -205,7 +206,7 @@ function isSavedPlace(value: unknown): value is SavedPlace {
   return isRecord(value) && typeof value.id === "number" && typeof value.alias === "string" &&
     typeof value.display_name === "string" && typeof value.latitude === "number" && typeof value.longitude === "number" &&
     isNullableString(value.formatted_address) && isNullableString(value.locality) && isNullableString(value.region) &&
-    isNullableString(value.country) && isNullableString(value.timezone) && value.location_source === "tomtom_search" &&
+    isNullableString(value.country) && isNullableString(value.timezone) && ["tomtom_search", "gps", "map_pin"].includes(value.location_source as string) &&
     typeof value.created_at === "string" && typeof value.updated_at === "string";
 }
 
@@ -354,6 +355,30 @@ function isRouteLandmarks(value: unknown): value is RouteLandmarkEstimate[] {
 }
 
 export const scheduleApi = {
+  async savedPlaceMap(center: { latitude: number; longitude: number }, zoom: number, token: string | null, options: ScheduleRequestOptions = {}): Promise<Blob> {
+    if (!token) throw new ScheduleApiError("Your session is unavailable. Refresh the page or sign in again.", 401);
+    let response: Response;
+    try {
+      response = await fetch(`${apiBaseUrl}/locations/map-image`, {
+        method: "POST",
+        headers: { Accept: "image/png", Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ ...center, zoom }), cache: "no-store", signal: options.signal,
+      });
+    } catch (error) {
+      if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw new ScheduleApiError("Request cancelled.", null, null, "cancelled");
+      throw new ScheduleApiError("Map preview could not be loaded. You can retry or continue without an address.", null);
+    }
+    if (!response.ok) {
+      let message = "Map preview could not be loaded. You can retry or continue without an address.";
+      try { const payload: unknown = await response.json(); if (isRecord(payload) && typeof payload.detail === "string") message = payload.detail; } catch { /* Use the safe fallback. */ }
+      throw new ScheduleApiError(message, response.status);
+    }
+    return response.blob();
+  },
+  reverseGeocode(coordinate: { latitude: number; longitude: number }, token: string | null, options?: ScheduleRequestOptions) {
+    return request<{ address: string | null }>("/locations/reverse-geocode", token, "POST", coordinate,
+      (value): value is { address: string | null } => isRecord(value) && isNullableString(value.address), options);
+  },
   savedPlaces(token: string | null, options?: ScheduleRequestOptions) {
     return request<SavedPlace[]>("/saved-places", token, "GET", undefined, isSavedPlaceList, options);
   },

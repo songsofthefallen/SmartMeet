@@ -34,6 +34,27 @@ def test_static_image_uses_server_key_and_bounded_map_request(monkeypatch: pytes
     assert params["zoom"] == 8
 
 
+def test_static_image_at_uses_fixed_interactive_viewport_and_rejects_invalid_coordinates(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = TomTomMapService(api_key="server-secret")
+    captured: dict[str, object] = {}
+
+    class Response:
+        headers = {"content-type": "image/png"}
+        content = b"image-bytes"
+        def raise_for_status(self) -> None: pass
+
+    def fake_get(_url: str, *, params: dict[str, object], timeout: float) -> Response:
+        captured.update(params=params, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("map_service.httpx.get", fake_get)
+    assert service.static_image_at(14.6, 121.0, 16) == (b"image-bytes", "image/png")
+    params = captured["params"]
+    assert isinstance(params, dict) and params["center"] == "121.0,14.6" and params["zoom"] == 16
+    with pytest.raises(ValueError):
+        service.static_image_at(90, 0, 16)
+
+
 def test_static_image_maps_provider_failures_safely(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TOMTOM_API_KEY", "server-secret")
 
