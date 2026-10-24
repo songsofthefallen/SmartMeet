@@ -3,6 +3,7 @@
 import { useAuth } from "@clerk/nextjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TomTomMap } from "@tomtom-org/maps-sdk/map";
+import styles from "./saved-place-map-picker.module.css";
 import { scheduleApi, type SavedPlaceSource } from "@/lib/schedule-api";
 import { centerFromMap, initialMapView, isValidCoordinate, mapFailureMessage, subscribeToMapCenter, zoomAroundCenter } from "@/lib/saved-place-map-interaction.js";
 
@@ -18,7 +19,7 @@ export function SavedPlaceMapPicker({ initial, source, onConfirm, onCancel }: {
   onCancel: () => void;
 }) {
   const { getToken } = useAuth();
-  const [center, setCenter] = useState<Coordinate>(initial ?? { latitude: 0, longitude: 0 });
+  const [center, setCenter] = useState<Coordinate>(initial ?? { latitude: 14.5995, longitude: 120.9842 });
   const [address, setAddress] = useState<string | null>(null);
   const [geocodeState, setGeocodeState] = useState<"idle" | "loading" | "success" | "unavailable">("idle");
   const [mapError, setMapError] = useState<string | null>(browserMapApiKey ? null : mapFailureMessage("missing-key"));
@@ -72,6 +73,8 @@ export function SavedPlaceMapPicker({ initial, source, onConfirm, onCancel }: {
     let settleTimer: number | undefined;
     let wheelTarget: HTMLElement | null = null;
     let unsubscribeCenter: (() => void) | undefined;
+    let mapErrorHandler: ((event: { error?: unknown }) => void) | undefined;
+    let loadHandler: (() => void) | undefined;
     const generation = geocodeGeneration;
     const onMoveEnd = () => {
       if (!map) return;
@@ -111,20 +114,30 @@ export function SavedPlaceMapPicker({ initial, source, onConfirm, onCancel }: {
         unsubscribeCenter = subscribeToMapCenter(map.mapLibreMap, updateCenter, () => {
           if (settleTimer !== undefined) window.clearTimeout(settleTimer);
         });
-        map.mapLibreMap.on("load", () => {
+        loadHandler = () => {
           if (disposed) return;
           setMapLoading(false);
           setMapError(null);
           wheelTarget = map?.mapLibreMap.getCanvasContainer() ?? null;
           wheelTarget?.addEventListener("wheel", onWheel, { passive: false });
           if (initial && isValidCoordinate(initial.latitude, initial.longitude)) void reverseGeocode(initial);
-        });
+        };
+        mapErrorHandler = () => {
+          if (disposed) return;
+          setMapLoading(false);
+          setMapError(mapFailureMessage("provider"));
+        };
+        map.mapLibreMap.on("load", loadHandler);
         map.mapLibreMap.on("moveend", onMoveEnd);
-        map.mapLibreMap.on("error", () => {
-          if (!disposed) { setMapLoading(false); setMapError(mapFailureMessage("provider")); }
-        });
-      } catch {
-        if (!disposed) { setMapLoading(false); setMapError(mapFailureMessage("webgl")); }
+        map.mapLibreMap.on("error", mapErrorHandler);
+      } catch (error) {
+        if (!disposed) {
+          const errorCode = error && typeof error === "object" && "code" in error && typeof error.code === "string"
+            ? error.code
+            : "webgl";
+          setMapLoading(false);
+          setMapError(mapFailureMessage(errorCode));
+        }
       }
     })();
     return () => {
@@ -132,6 +145,8 @@ export function SavedPlaceMapPicker({ initial, source, onConfirm, onCancel }: {
       if (settleTimer !== undefined) window.clearTimeout(settleTimer);
       wheelTarget?.removeEventListener("wheel", onWheel);
       unsubscribeCenter?.();
+      if (map && loadHandler) map.mapLibreMap.off("load", loadHandler);
+      if (map && mapErrorHandler) map.mapLibreMap.off("error", mapErrorHandler);
       map?.mapLibreMap.off("moveend", onMoveEnd);
       map?.mapLibreMap.remove();
       mapRef.current = null;
@@ -161,8 +176,8 @@ export function SavedPlaceMapPicker({ initial, source, onConfirm, onCancel }: {
     <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">Choose a point on the map</p><div className="flex items-center gap-1" aria-label="Map controls">
       <button type="button" className={control} aria-label="Zoom out" onClick={() => setZoom(-1)}>−</button><button type="button" className={control} aria-label="Zoom in" onClick={() => setZoom(1)}>+</button>
     </div></div>
-    <div className="relative aspect-[960/420] w-full overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
-      <div ref={mapContainer} className="absolute inset-0" role="application" aria-label="Interactive map. Drag to pan; use the mouse wheel to zoom." />
+    <div className={`relative ${styles.mapFrame} w-full overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]`}>
+      <div ref={mapContainer} className={styles.mapContainer} role="application" aria-label="Interactive map. Drag to pan; use the mouse wheel to zoom." />
       <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-full" aria-hidden="true">
         <div className="relative h-7 w-7 rounded-full border-[3px] border-white bg-[var(--brand-primary)] shadow-lg"><span className="absolute -bottom-2 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 border-b-2 border-r-2 border-white bg-[var(--brand-primary)]" /></div>
       </div>

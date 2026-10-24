@@ -1,0 +1,8 @@
+.mapFrame {
+  height: clamp(18.75rem, 55vw, 26.25rem);
+}
+
+.mapContainer {
+  width: 100%;
+  height: 100%;
+}
