@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { CalendarDays, Check, Clock3, Pencil, Plus, RefreshCw, X } from "lucide-react";
+import { CalendarDays, Check, Pencil, Plus, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { scheduleApi, ScheduleApiError, type LocationSelection, type RouteAlternativeEstimate, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent, type ScheduleUpdateInput, type SavedPlace, type TrafficSectionEstimate } from "@/lib/schedule-api";
 import { clarificationQuestions } from "@/lib/clarification-messages";
@@ -10,6 +10,7 @@ import { isAssistantAutosaveEligible } from "@/lib/assistant-autosave";
 import { formatTrafficDelay, groupTrafficSections, routeTimeBasisLabel, trafficIncidentDetails, trafficStatusLabel } from "@/lib/traffic-display.js";
 import { arrivalPreparationNote, suggestedTimeRows } from "@/lib/suggested-times.js";
 import { upsertScheduleNewestFirst } from "@/lib/schedule-order.js";
+import { groupSchedules } from "@/lib/schedule-list.js";
 import { shouldInvalidateLocationSelection } from "@/lib/location-selection.js";
 import { isCurrentGeneration, isCurrentGenerationForKey } from "@/lib/request-generation";
 import { hasRouteLocations, hasWeatherLocation } from "@/lib/location-aware-state.js";
@@ -190,10 +191,7 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
     };
   }, []);
 
-  const activeSchedules = useMemo(
-    () => schedules.filter((item) => item.status === "active"),
-    [schedules],
-  );
+  const scheduleGroups = useMemo(() => groupSchedules(schedules), [schedules]);
 
   const loadSchedules = useCallback(async () => {
     const generation = ++loadGeneration.current;
@@ -803,6 +801,12 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
   const suggestedRows = selected ? suggestedTimeRows(selected, formatDate) : [];
   const preparationNote = selected ? arrivalPreparationNote(selected) : null;
   const extractionQuestions = extractionReview ? clarificationQuestions(extractionReview, form.timezone) : [];
+  function renderScheduleGroup(title: string, items: Schedule[], emptyText?: string) {
+    return <section aria-label={title}>
+      <div className="mb-2 flex items-baseline justify-between"><h2 className="text-lg font-semibold">{title}</h2><span className="text-xs tabular-nums text-[var(--text-muted)]">{items.length}</span></div>
+      {items.length === 0 ? <p className="border-t border-[var(--border)] py-5 text-sm text-[var(--text-muted)]">{emptyText}</p> : <ul className="divide-y divide-[var(--border)] border-y border-[var(--border)]">{items.map((item) => <li key={item.id}><button type="button" onClick={() => void selectSchedule(item)} className={`w-full py-4 text-left transition hover:bg-[var(--surface-hover)] focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--brand-primary)] ${selectedId === item.id && view === "detail" ? "bg-[var(--brand-subtle)]" : ""}`} aria-current={selectedId === item.id && view === "detail" ? "true" : undefined} aria-label={`Open ${item.title}, ${formatDate(item.target_datetime, item.timezone)}`}><span className="flex items-start justify-between gap-3"><span className="min-w-0"><span className="block truncate font-semibold">{item.title}</span><span className="mt-1 block text-sm tabular-nums text-[var(--text-secondary)]">{formatDate(item.target_datetime, item.timezone)}</span></span><span className="shrink-0 rounded-md bg-[var(--surface-secondary)] px-2 py-1 text-xs font-medium text-[var(--text-secondary)]">{item.time_intent === "arrival" ? "Arrive by" : "Leave at"}</span></span><span className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]"><span>{item.location?.name ?? "Destination not set"}</span><span aria-hidden="true">·</span><span className="capitalize">{item.status}</span>{item.travel_duration_minutes !== null && item.travel_duration_minutes > 0 && <><span aria-hidden="true">·</span><span>{item.travel_duration_minutes} min travel estimate</span></>}</span></button></li>)}</ul>}
+    </section>;
+  }
   const showSplitTargetInputs = Boolean(
     extractionReview?.status === "needs_clarification" &&
       extractionReview.extraction &&
@@ -818,15 +822,19 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
         <SavedPlacesPanel />
         <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-          <div><p className="text-sm font-semibold text-[var(--brand-primary)]">SCHEDULES</p><h1 className="mt-1 text-3xl font-bold tracking-tight sm:text-4xl">Plan what&apos;s next</h1><p className="mt-2 text-[var(--text-secondary)]">Keep your upcoming plans clear and easy to manage.</p></div>
-          <button className={primaryButton} onClick={openCreate} disabled={!isLoaded || loading}><PlusIcon /> New schedule</button>
+          <div><h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Schedules</h1><p className="mt-2 max-w-xl text-[var(--text-secondary)]">A clear view of what&apos;s ahead and what&apos;s already passed.</p></div>
+          <button className={primaryButton} onClick={openCreate} disabled={!isLoaded || loading}><PlusIcon /> Plan a schedule</button>
         </div>
         {message && <div className={`mb-5 flex items-start gap-3 rounded-xl border px-4 py-3 text-sm ${message.kind === "success" ? "border-[var(--state-success)]/20 bg-[var(--state-success-bg)] text-[var(--state-success)]" : message.kind === "info" ? "border-[var(--state-warning)]/25 bg-[var(--state-warning-bg)] text-[var(--state-warning)]" : "border-[var(--state-error)]/20 bg-[var(--state-error-bg)] text-[var(--state-error)]"}`} role={message.kind === "error" ? "alert" : "status"}><span className="font-bold" aria-hidden="true">{message.kind === "success" ? "✓" : "!"}</span><span>{message.text}</span><button className="ml-auto rounded px-2 font-semibold focus-visible:outline-2" aria-label="Dismiss message" onClick={() => setMessage(null)}>×</button></div>}
 
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
-          <section aria-labelledby="upcoming-heading" className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
-            <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4 sm:px-6"><div><h2 id="upcoming-heading" className="font-semibold">Upcoming schedules</h2><p className="mt-0.5 text-sm text-[var(--text-muted)]">{activeSchedules.length} active {activeSchedules.length === 1 ? "schedule" : "schedules"}</p></div><button className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--brand-primary)] hover:bg-[var(--brand-subtle)] disabled:opacity-60" onClick={refreshSchedules} disabled={loading} aria-label="Refresh schedules">Refresh</button></div>
-            {loading ? <div className="space-y-3 p-5" aria-label="Loading schedules" role="status"><div className="h-24 animate-pulse rounded-xl bg-[var(--surface-secondary)]"/><div className="h-24 animate-pulse rounded-xl bg-[var(--surface-secondary)]"/><span className="sr-only">Loading schedules...</span></div> : loadError ? <div className="px-6 py-14 text-center"><h3 className="font-semibold">Schedules couldn&apos;t be loaded</h3><p className="mt-1 text-sm text-[var(--text-muted)]">Resolve the service or session error above, then try again.</p><button className={`${primaryButton} mt-5`} onClick={refreshSchedules}><RefreshIcon /> Try again</button></div> : activeSchedules.length === 0 ? <div className="px-6 py-14 text-center"><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[var(--brand-subtle)] text-[var(--brand-primary)]"><CalendarIcon /></span><h3 className="mt-4 font-semibold">{schedules.length ? "No active schedules" : "No upcoming schedules"}</h3><p className="mx-auto mt-1 max-w-sm text-sm text-[var(--text-muted)]">{schedules.length ? "Create a new schedule to plan what's next." : "Add a schedule to see it here."}</p><button className={`${primaryButton} mt-5`} onClick={openCreate}><PlusIcon /> Add a schedule</button></div> : <ul className="divide-y divide-[var(--border)]">{activeSchedules.map((item) => <li key={item.id}><button onClick={() => void selectSchedule(item)} className={`w-full p-5 text-left transition hover:bg-[var(--surface-hover)] focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--brand-primary)] sm:px-6 ${selectedId === item.id && view === "detail" ? "bg-[var(--brand-subtle)]" : ""}`} aria-current={selectedId === item.id && view === "detail" ? "true" : undefined}><div className="flex items-start justify-between gap-4"><span className="min-w-0"><span className="block truncate font-semibold">{item.title}</span><span className="mt-1 block text-sm text-[var(--text-secondary)]">{formatDate(item.target_datetime, item.timezone)}</span></span><span className="shrink-0 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-xs font-medium text-[var(--text-secondary)]">{item.time_intent === "arrival" ? "Arrive by" : "Leave at"}</span></div><span className="mt-3 flex items-center gap-2 text-xs text-[var(--text-muted)]"><ClockIcon /> {item.timezone} <span aria-hidden="true">·</span><span className="capitalize">{item.status}</span></span></button></li>)}</ul>}
+          <section aria-label="Schedule list" className="min-w-0">
+            <div className="mb-4 flex items-center justify-between gap-3"><p className="text-sm text-[var(--text-muted)]">{schedules.length} {schedules.length === 1 ? "schedule" : "schedules"}</p><button className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-[var(--brand-primary)] hover:bg-[var(--brand-subtle)] disabled:opacity-60" onClick={refreshSchedules} disabled={loading} aria-label="Refresh schedules"><RefreshIcon /> Refresh</button></div>
+            {loading ? <div className="space-y-3" aria-label="Loading schedules" role="status"><div className="h-24 animate-pulse rounded-xl bg-[var(--surface-secondary)]"/><div className="h-24 animate-pulse rounded-xl bg-[var(--surface-secondary)]"/><span className="sr-only">Loading schedules...</span></div> : loadError ? <div className="border-y border-[var(--state-error)]/30 py-10" role="alert"><h2 className="font-semibold">Schedules couldn&apos;t be loaded</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Resolve the service or session error above, then try again.</p><button className={`${secondaryButton} mt-4`} onClick={refreshSchedules}><RefreshIcon /> Try again</button></div> : schedules.length === 0 ? <div className="border-y border-[var(--border)] py-12"><CalendarIcon /><h2 className="mt-4 text-xl font-semibold">No schedules yet</h2><p className="mt-2 max-w-md text-[var(--text-secondary)]">Plan a schedule to keep the event time, destination, and travel details together.</p><button className={`${primaryButton} mt-5`} onClick={openCreate}><PlusIcon /> Plan a schedule</button></div> : <div className="space-y-8">
+              {renderScheduleGroup("Upcoming", scheduleGroups.upcoming, "Nothing upcoming. Past schedules remain below.")}
+              {scheduleGroups.past.length > 0 && renderScheduleGroup("Past", scheduleGroups.past)}
+              {scheduleGroups.inactive.length > 0 && renderScheduleGroup("Cancelled or completed", scheduleGroups.inactive)}
+            </div>}
           </section>
 
           <section aria-label={view === "form" ? (editingId ? "Edit schedule" : "Create schedule") : "Schedule details"} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-sm">
@@ -923,7 +931,6 @@ function LocationPicker({ label, value, savedPlaces, query, results, searching, 
 
 function DetailRow({ label, value }: { label: string; value: string }) { return <div className="grid grid-cols-[minmax(100px,0.7fr)_1.3fr] gap-3 py-3 text-sm"><dt className="text-[var(--text-muted)]">{label}</dt><dd className="break-words font-medium capitalize text-[var(--text-primary)]">{value}</dd></div>; }
 function CalendarIcon() { return <CalendarDays aria-hidden="true" className="h-5 w-5" strokeWidth={1.8} />; }
-function ClockIcon() { return <Clock3 aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />; }
 function PlusIcon() { return <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={2} />; }
 function CheckIcon() { return <Check aria-hidden="true" className="h-4 w-4" strokeWidth={2} />; }
 function PencilIcon() { return <Pencil aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />; }

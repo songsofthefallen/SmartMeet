@@ -1,5 +1,16 @@
 ## Current Progress
 
+### SmartMeet UI Redesign Phase 3 - Schedules Experience
+
+- Reworked the existing Schedules list into chronological Upcoming, Past, and Cancelled or completed groups using the API-provided `status`, `is_past`, and `target_datetime` fields. Upcoming events sort earliest first; past and inactive records are retained for management.
+- Rows show the actual target time, time intent, destination when available, status, and travel duration only when the schedule response contains a positive estimate. Reminder-delivery status is omitted because `GET /schedules` does not include reminder delivery records.
+- Kept the existing two-pane schedule workspace, `?open=<id>` query handling, details/edit flow, create transition (`?create=1` remains supported), natural-language interpretation, auto-save, route/weather behavior, Saved Places panel, and authenticated layout. No API, schema, calculation, or provider changes.
+- Added `lib/schedule-list.js` and `lib/schedule-list.test.js` for deterministic grouping/order and checks for existing query handling, selection/detail/edit actions, and distinct loading, API error, and empty states. The existing Dashboard link contract remains `/schedules?open=<id>`.
+- Automated verification: `npm run test:frontend`, `npx tsc --noEmit`, `npm run lint`, `npm run build`, and `git diff --check` passed. Frontend test output includes the existing Node `MODULE_TYPELESS_PACKAGE_JSON` notices for TypeScript tests; ESLint completed without warnings after cleanup.
+- Browser verification in VS Code's integrated localhost preview: signed-in desktop layout and a narrow embedded viewport were inspected. The account showed one past active record and two cancelled records; chronological sections and responsive stacking rendered, and selecting an existing cancelled row opened its matching details. The existing `Edit` experience remains present for eligible active schedules; no schedule was edited or created.
+- Verification limits: no upcoming real schedule was available, so the populated upcoming group was covered by fixtures rather than live account data. The narrow check used the approximately 500px-wide VS Code preview pane, not a device emulator at a phone-specific width. No map interactions were repeated; map code was untouched and the frontend map regression tests passed.
+
+
 ### SmartMeet Phase 2 - Dashboard redesign
 
 - Audited the authenticated schedule list flow and response fields before implementation. The Dashboard reuses the existing user-owned schedule API and backend-calculated departure values; upcoming selection excludes past, cancelled, completed, malformed, or non-future events.
@@ -25,9 +36,9 @@
 
 ### Saved Places map CSS Module rendering regression
 
-- Confirmed root cause: `next.config.ts` applied its broad Turbopack `"*.css"` rule to `*.module.css` too. The emitted CSS contained the responsive selectors, but Turbopack treated the CSS Module as ordinary CSS, so the module export had no `mapFrame` key. In the signed-in browser the wrapper class became `undefined`, its measured size was 1076 × 2 px, and the SDK host was 1074 × 0 px. MapLibre reached `idle` without a map error, but had no visible basemap.
+- Confirmed root cause: `next.config.ts` applied its broad Turbopack `"*.css"` rule to `*.module.css` too. The emitted CSS contained the responsive selectors, but Turbopack treated the CSS Module as ordinary CSS, so the module export had no `mapFrame` key. In the signed-in browser the wrapper class became `undefined`, its measured size was 1076 ï¿½ 2 px, and the SDK host was 1074 ï¿½ 0 px. MapLibre reached `idle` without a map error, but had no visible basemap.
 - Fixed the rule with a path exclusion for `*.module.css`, preserving the CSS Module import. The existing responsive `clamp(18.75rem, 55vw, 26.25rem)` frame and full-size SDK host now receive their intended classes. Removed the temporary development diagnostic panel and instrumentation; retained a regression test that checks sizing rules, module class references, and the Turbopack exclusion.
-- Actual browser verification on the signed-in `/schedules` page: the map visibly rendered land, water, roads, and labels; dragging moved map content beneath the stationary center marker; wheel zoom and zoom-in button changed map scale. Clicking “Use my current location” completed after the browser permission prompt and re-centered the map; reverse geocoding returned an address. The center-location confirmation control was exercised. Exact coordinates are intentionally omitted from this tracker.
+- Actual browser verification on the signed-in `/schedules` page: the map visibly rendered land, water, roads, and labels; dragging moved map content beneath the stationary center marker; wheel zoom and zoom-in button changed map scale. Clicking ï¿½Use my current locationï¿½ completed after the browser permission prompt and re-centered the map; reverse geocoding returned an address. The center-location confirmation control was exercised. Exact coordinates are intentionally omitted from this tracker.
 - Automated validation: frontend tests passed; `npx tsc --noEmit` passed; ESLint passed; production build passed; backend tests passed (371, with one pytest cache-path warning); `git diff --check` passed. No map provider, SDK version, style, API key, or database migration changed.
 ### Temporary Saved Places map diagnostics (removed)
 
