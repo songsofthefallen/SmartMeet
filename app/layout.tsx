@@ -4,8 +4,8 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Deadline Notifier",
-  description: "Local foundation for Deadline Notifier",
+  title: "SmartMeet",
+  description: "Plan when to leave and arrive on time.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

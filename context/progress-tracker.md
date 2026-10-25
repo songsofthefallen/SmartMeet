@@ -1,5 +1,22 @@
 ## Current Progress
 
+### SmartMeet Phase 2 - Dashboard redesign
+
+- Audited the authenticated schedule list flow and response fields before implementation. The Dashboard reuses the existing user-owned schedule API and backend-calculated departure values; upcoming selection excludes past, cancelled, completed, malformed, or non-future events.
+- Added a focused Dashboard overview with a next-event feature, compact following-event list, loading/error/retry states, and a useful empty state. Route duration, departure guidance, traffic, and weather render only when their existing response data passes display validation. The schedule creation action opens the existing creation workspace through a query parameter.
+- Reminder delivery status is not part of the existing schedule-list response, so the Dashboard does not imply delivery status. Existing notification settings remain on Dashboard.
+- Automated verification: `npm run test:frontend`, `npx tsc --noEmit`, `npm run lint`, `npm run build`, and `git diff --check` passed.
+- Browser verification in VS Code's integrated browser: signed-in desktop and a 503px-wide narrow preview loaded successfully. The account has one active past schedule and no qualifying upcoming schedule, so the actual Dashboard empty state was verified; no upcoming route, departure, or weather data was available to verify the populated feature. Schedule creation and detail links were not exercised with a future event. The shared navigation becomes horizontally scrollable at narrow width, while Dashboard content fits the viewport.
+- Saved Places/map was not re-exercised in this phase; Phase 1's recorded browser verification covers map rendering, panning, zoom, GPS initialization, and location confirmation. Dashboard changes do not touch map code.
+- Remaining verification limits: no real upcoming schedule was available, so populated Dashboard recommendation and event-link behavior remain covered by helper tests and existing route behavior rather than a live future schedule. Independent browser failure injection for route/weather data was not available.
+### SmartMeet design foundation and shared navigation
+
+- Phase 1 implementation complete and approved. Dark-only semantic token values and Tailwind v4 mappings are updated; reduced-motion, selection, focus, and tabular-number defaults are defined globally.
+- Added a shared authenticated route-group layout and responsive Lucide navigation for Dashboard, Schedules, Saved Places, and Settings. Dashboard and Schedules page files are grouped without changing their URLs; existing page-level protection remains, with the shell also protected by Clerk.
+- Added protected Saved Places and Settings route shells; existing Saved Places management stays inside the schedule workspace and notification settings stay on Dashboard for this phase. Removed only the schedule workspace's duplicate brand/account header.
+- Clerk wrappers had no explicit redirect props. The sign-in and sign-up components now use /dashboard as fallback; Clerk's explicit redirect URL from protected-route flow remains supported. Signed-in root requests redirect to /dashboard; signed-out landing and Clerk entry points remain available.
+- Updated UI context and recorded DEC-051. Verification: frontend tests, TypeScript, ESLint, production build, and git diff --check passed. Browser verification was subsequently completed in a signed-in session; responsive navigation, Clerk redirects, and the interactive Saved Places map were reviewed and approved by the user. The dev server remains available at localhost:3000.
+
 ### Saved Places map CSS Module rendering regression
 
 - Confirmed root cause: `next.config.ts` applied its broad Turbopack `"*.css"` rule to `*.module.css` too. The emitted CSS contained the responsive selectors, but Turbopack treated the CSS Module as ordinary CSS, so the module export had no `mapFrame` key. In the signed-in browser the wrapper class became `undefined`, its measured size was 1076 × 2 px, and the SDK host was 1074 × 0 px. MapLibre reached `idle` without a map error, but had no visible basemap.

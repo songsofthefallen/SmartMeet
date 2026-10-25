@@ -2,92 +2,64 @@
 
 ## Theme
 
-Light mode. Clean, modern productivity UI with a white background, soft blue-gray surfaces, dark navy text, and blue accents. Keep the design minimal, spacious, and easy to scan.
+Dark-only SmartMeet interface with a premium editorial identity and a precise scheduling command-center hierarchy. The visual anchor is the departure desk: an ink-dark field, layered slate surfaces, restrained cool-blue navigation and actions, and clear event time typography. Do not add a light mode.
 
-Define all colors as CSS custom properties in `globals.css` and map them to Tailwind theme tokens using the syntax supported by the installed Tailwind version. Components must use semantic tokens instead of hardcoded colors or arbitrary Tailwind color classes.
+All interface colors live in CSS custom properties in `app/globals.css` and are mapped through Tailwind v4's CSS-first `@theme inline`. Use semantic tokens in components instead of arbitrary colors or raw Tailwind color palettes.
 
-| Role | CSS Variable | Hex / Value |
+| Role | CSS Variable | Value |
 |---|---|---|
-| Page background | `--background` | `#F6F8FC` |
-| Surface | `--surface` | `#FFFFFF` |
-| Subtle surface | `--surface-secondary` | `#F1F5F9` |
-| Hover surface | `--surface-hover` | `#EAF0F8` |
-| Default border | `--border` | `#E2E8F0` |
-| Primary text | `--text-primary` | `#0F172A` |
-| Secondary text | `--text-secondary` | `#475569` |
-| Muted text | `--text-muted` | `#64748B` |
-| Brand accent | `--brand-primary` | `#2563EB` |
-| Brand hover | `--brand-hover` | `#1D4ED8` |
-| Brand subtle | `--brand-subtle` | `#EFF6FF` |
-| Error | `--state-error` | `#B91C1C` |
-| Error background | `--state-error-bg` | `#FEF2F2` |
-| Success | `--state-success` | `#047857` |
-| Success background | `--state-success-bg` | `#ECFDF5` |
-| Warning | `--state-warning` | `#92400E` |
-| Warning background | `--state-warning-bg` | `#FFFBEB` |
+| Page background | `--background` | `#0A1119` |
+| Surface | `--surface` | `#111B26` |
+| Subtle surface | `--surface-secondary` | `#172432` |
+| Hover surface | `--surface-hover` | `#1D3041` |
+| Default border | `--border` | `#2A3A49` |
+| Primary text | `--text-primary` | `#E7EEF5` |
+| Secondary text | `--text-secondary` | `#B3C0CC` |
+| Muted text | `--text-muted` | `#8797A7` |
+| Brand accent | `--brand-primary` | `#79AFFF` |
+| Brand hover | `--brand-hover` | `#9AC3FF` |
+| Brand subtle | `--brand-subtle` | `#182D46` |
+| Error | `--state-error` | `#FF9797` |
+| Error background | `--state-error-bg` | `#3B2228` |
+| Success | `--state-success` | `#7BD9A5` |
+| Success background | `--state-success-bg` | `#19362A` |
+| Warning | `--state-warning` | `#F0C474` |
+| Warning background | `--state-warning-bg` | `#3A301E` |
 
-Use blue for primary actions and active navigation, green for confirmed success, amber for warnings or assumptions, and red for errors or destructive actions. Statuses must include readable text or an icon; never rely on color alone.
+Use blue for primary actions and active navigation, green for confirmed success, amber for warnings, and red for errors or destructive actions. Statuses need readable text or an icon; never rely on color alone.
 
 ## Typography
 
-Use Geist Sans if already available in the Next.js project; otherwise use a clean system sans-serif font. Keep typography consistent, readable, and centralized through CSS variables.
+Use the centralized system sans stack unless a bundled typeface is deliberately adopted. Establish hierarchy with scale, weight, line length, and spacing rather than decorative labels. Keep event times tabular and easy to scan.
 
-- Headings: bold, dark navy.
-- Body text: regular, dark secondary text.
-- Supporting text: muted gray.
-- Time displays: use tabular numerals where available.
+- Page headings: confident, compact, and left aligned.
+- Body text: readable with calm line spacing.
+- Supporting text: muted, while maintaining accessible contrast.
+- Numeric time and route values: tabular numerals.
 
-## Border Radius
+## Shape and surfaces
 
-Use a consistent radius scale:
+Use restrained radii for controls and small status markers. Reserve bordered surfaces for related controls, map frames, and genuinely grouped data. Prefer spacing, alignment, and dividers to repeated cards. Avoid gradients, glow effects, and decorative borders.
 
-| Context | Class |
-|---|---|
-| Small controls and badges | `rounded-lg` |
-| Inputs and buttons | `rounded-xl` |
-| Cards and panels | `rounded-2xl` |
-| Large dialogs | `rounded-3xl` |
+## Components and icons
 
-Prefer subtle borders and soft shadows. Avoid excessive gradients, heavy shadows, and unnecessary decoration.
+Use Lucide React (`lucide-react`) with consistent stroke weight. Icon-only controls need accessible names and visible focus. Use semantic tokens for all component states. Do not add a component library unless a specific requirement justifies it.
 
-## Component Library
+## Layout patterns
 
-Use shadcn/ui with Tailwind if already installed or selected for the project. Inspect the existing setup before adding dependencies. Keep reusable components in the shared UI directory and use consistent variants for buttons, inputs, cards, dialogs, badges, and alerts.
+- **Shared signed-in shell:** persistent desktop navigation rail; compact horizontal navigation on mobile; consistent account access and clear current-page indication.
+- **Dashboard:** daily overview led by the next known event and supported planning information.
+- **Schedules:** chronological event management with a separate focused schedule creation workspace.
+- **Saved Places:** dedicated aliases and location management with its interactive map.
+- **Settings:** supported notification controls and preferences.
+- **Responsive behavior:** preserve readable content width; stack secondary information on mobile; keep all navigation and controls keyboard reachable.
 
-## Layout Patterns
+Do not show a schedule as saved until the backend confirms persistence. Never display invented travel, departure, wake-up, or weather information.
 
-- **Main assistant:** prominent natural-language input, primary submit button, example prompts, and clear loading, clarification, error, and success states.
-- **Dashboard:** simple sidebar navigation and a spacious main content area.
-- **Schedule cards:** title, event time, arrival/departure badge, locations, and supported estimates.
-- **Schedule details:** grouped event information, locations, timing, notes, and edit/cancel actions.
-- **Settings:** clean, separated sections for notifications and preferences.
-- **Dialogs:** centered, accessible overlays with a subtle backdrop.
-- **Responsive layout:** persistent sidebar on desktop; compact navigation and stacked content on mobile.
+## Accessibility and motion
 
-Do not show a schedule as saved until the backend confirms persistence. Never display invented travel, departure, or wake-up estimates.
+Use semantic landmarks, visible keyboard focus, accessible labels, and text or icons alongside status color. Respect reduced-motion preferences. Keep active navigation distinguishable without color alone.
 
-## Icons
+## Design rules
 
-Use Lucide React (`lucide-react`) if installed or selected. Use consistent stroke-based icons; avoid mixing icon libraries or using emoji as interface icons.
-
-- Calendar — schedules and events
-- Clock — event and reminder times
-- Map pin — locations
-- Car — travel estimates
-- Bell — notifications
-- Check circle — successful operations
-- Alert triangle — warnings
-- Circle alert — errors
-- Settings — preferences
-- Pencil — editing
-- Trash or X — removal or cancellation
-
-Sizes: `h-4 w-4` for inline icons, `h-5 w-5` for buttons and navigation, and `h-8 w-8` for empty-state illustrations. Icon-only buttons must have accessible labels and visible focus states.
-
-## Design Rules
-
-- Keep colors and shared styles centralized so the theme can be changed easily.
-- Maintain consistent spacing, typography, and component variants.
-- Use visible keyboard focus and accessible form labels.
-- Keep the UI calm, readable, and focused on helping users arrive on time.
-- Treat the approved Deadline Notifier mockup as the visual reference; this document defines the canonical colors and styling rules.
+Maintain the SmartMeet dark-only token system. Use typography, spacing, alignment, and restrained blue accents to create hierarchy. Keep the page useful at desktop and mobile widths and preserve established schedule, route, weather, notification, and map behavior during visual changes.

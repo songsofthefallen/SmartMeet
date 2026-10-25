@@ -1,6 +1,7 @@
 "use client";
 
-import { useAuth, UserButton } from "@clerk/nextjs";
+import { useAuth } from "@clerk/nextjs";
+import { CalendarDays, Check, Clock3, Pencil, Plus, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { scheduleApi, ScheduleApiError, type LocationSelection, type RouteAlternativeEstimate, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent, type ScheduleUpdateInput, type SavedPlace, type TrafficSectionEstimate } from "@/lib/schedule-api";
 import { clarificationQuestions } from "@/lib/clarification-messages";
@@ -116,7 +117,7 @@ function isCancellation(error: unknown): boolean {
   return error instanceof ScheduleApiError && error.code === "cancelled";
 }
 
-export default function ScheduleWorkspace() {
+export default function ScheduleWorkspace({ startInCreate = false }: { startInCreate?: boolean }) {
   const { getToken, isLoaded } = useAuth();
   const { places: savedPlaces } = useSavedPlaces();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -137,6 +138,7 @@ export default function ScheduleWorkspace() {
   const autoSavePending = useRef(false);
   const idempotencyKey = useRef<string | null>(null);
   const scheduleForm = useRef<HTMLFormElement>(null);
+  const initialCreateHandled = useRef(false);
   const [message, setMessage] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -338,7 +340,7 @@ export default function ScheduleWorkspace() {
     };
   }, [view, editingId, selectedSchedule, form.origin_location, form.location, form.target_datetime, form.time_intent, form.timezone, getToken, routeSearchVersion, routeNoRouteKey, routeLocationsReady, currentRouteContextKey, currentRouteKey]);
 
-  function openCreate() {
+  const openCreate = useCallback(() => {
     setRouteNoRouteKey(null);
     setRouteOptionsKey(null);
     setEditingId(null);
@@ -360,7 +362,13 @@ export default function ScheduleWorkspace() {
     autoSavePending.current = false;
     idempotencyKey.current = null;
     setView("form");
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!startInCreate || !isLoaded || loading || initialCreateHandled.current) return;
+    initialCreateHandled.current = true;
+    openCreate();
+  }, [isLoaded, loading, openCreate, startInCreate]);
 
   function clearRouteUnavailableConfirmation() {
     setRouteUnavailableConfirmation(false);
@@ -807,15 +815,6 @@ export default function ScheduleWorkspace() {
 
   return (
     <main className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
-      <header className="border-b border-[var(--border)] bg-[var(--surface)]">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-          <a href="/dashboard" className="flex items-center gap-3 rounded-lg focus-visible:outline-2 focus-visible:outline-[var(--brand-primary)]" aria-label="Deadline Notifier dashboard">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--brand-subtle)] text-[var(--brand-primary)]" aria-hidden="true"><CalendarIcon /></span>
-            <span><span className="block text-sm font-bold tracking-tight">Deadline Notifier</span><span className="block text-xs text-[var(--text-muted)]">Your schedule</span></span>
-          </a>
-          <div className="flex items-center gap-3"><a className="hidden rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] sm:block" href="/dashboard">Dashboard</a><UserButton /></div>
-        </div>
-      </header>
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
         <SavedPlacesPanel />
         <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -923,10 +922,10 @@ function LocationPicker({ label, value, savedPlaces, query, results, searching, 
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) { return <div className="grid grid-cols-[minmax(100px,0.7fr)_1.3fr] gap-3 py-3 text-sm"><dt className="text-[var(--text-muted)]">{label}</dt><dd className="break-words font-medium capitalize text-[var(--text-primary)]">{value}</dd></div>; }
-function CalendarIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M7.5 3.5v3M16.5 3.5v3M3.5 9h17M8 13h.01M12 13h.01M16 13h.01M8 16.5h.01M12 16.5h.01" strokeLinecap="round"/></svg>; }
-function ClockIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
-function PlusIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4"><path d="M12 5v14M5 12h14" strokeLinecap="round"/></svg>; }
-function CheckIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4"><path d="m5 12 4 4L19 6" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
-function PencilIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4"><path d="m14 5 5 5M4 20l4.5-1 10.8-10.8a2.1 2.1 0 0 0-3-3L5.5 16 4 20Z" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
-function CloseIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4"><path d="m6 6 12 12M18 6 6 18" strokeLinecap="round"/></svg>; }
-function RefreshIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4"><path d="M20 7v5h-5M4 17v-5h5" strokeLinecap="round" strokeLinejoin="round"/><path d="M5.5 9A7 7 0 0 1 18 6l2 2M4 16l2 2a7 7 0 0 0 12.5-3" strokeLinecap="round" strokeLinejoin="round"/></svg>; }
+function CalendarIcon() { return <CalendarDays aria-hidden="true" className="h-5 w-5" strokeWidth={1.8} />; }
+function ClockIcon() { return <Clock3 aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />; }
+function PlusIcon() { return <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={2} />; }
+function CheckIcon() { return <Check aria-hidden="true" className="h-4 w-4" strokeWidth={2} />; }
+function PencilIcon() { return <Pencil aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />; }
+function CloseIcon() { return <X aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />; }
+function RefreshIcon() { return <RefreshCw aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />; }
