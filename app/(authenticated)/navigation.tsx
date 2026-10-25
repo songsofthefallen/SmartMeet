@@ -30,7 +30,7 @@ export default function AuthenticatedNavigation() {
         <div className="lg:hidden"><UserButton /></div>
       </div>
 
-      <nav aria-label="Main navigation" className="flex gap-1 overflow-x-auto px-3 pb-3 lg:flex-1 lg:flex-col lg:gap-1.5 lg:overflow-visible lg:px-4 lg:py-7">
+      <nav aria-label="Main navigation" className="grid grid-cols-2 gap-1 px-3 pb-3 md:grid-cols-4 lg:flex lg:flex-1 lg:flex-col lg:gap-1.5 lg:overflow-visible lg:px-4 lg:py-7">
         {destinations.map(({ href, label, Icon }) => {
           const active = pathname === href || pathname.startsWith(`${href}/`);
           return (

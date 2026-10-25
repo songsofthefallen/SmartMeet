@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowUpRight, CalendarDays, CarFront, CloudRain, MapPin, RefreshCw, Route } from "lucide-react";
-import { getAvailableWeather, getDepartureRecommendation, getTrafficSummary, getUpcomingSchedules, getValidTravelEstimate } from "@/lib/dashboard-overview.js";
+import { getAvailableWeather, getDashboardContentState, getDepartureRecommendation, getScheduleHref, getTrafficSummary, getUpcomingSchedules, getValidTravelEstimate } from "@/lib/dashboard-overview.js";
 import { isTrafficEstimateStale, trafficStatusLabel } from "@/lib/traffic-display.js";
 import { ScheduleApiError, scheduleApi, type Schedule, type WeatherAdvisory } from "@/lib/schedule-api";
 
@@ -87,6 +87,7 @@ export default function DashboardOverview() {
   const upcoming = useMemo(() => getUpcomingSchedules(schedules, clockNow), [clockNow, schedules]);
   const next = upcoming[0] ?? null;
   const laterSchedules = upcoming.slice(1, 5);
+  const contentState = getDashboardContentState(state, upcoming.length > 0);
 
   return (
     <div className="mx-auto w-full max-w-6xl px-5 pb-10 pt-9 sm:px-8 sm:pb-12 sm:pt-12 lg:px-10 lg:pt-14">
@@ -102,8 +103,8 @@ export default function DashboardOverview() {
         </Link>
       </header>
 
-      {state === "loading" && <LoadingOverview />}
-      {state === "error" && (
+      {contentState === "loading" && <LoadingOverview />}
+      {contentState === "error" && (
         <section className="py-12 sm:py-16" role="alert" aria-labelledby="dashboard-error-title">
           <h2 id="dashboard-error-title" className="text-xl font-semibold tracking-tight">Your schedules aren’t available right now.</h2>
           <p className="mt-2 max-w-xl text-sm leading-6 text-text-secondary">{error || "Check your connection, then try again."}</p>
@@ -113,13 +114,13 @@ export default function DashboardOverview() {
           </button>
         </section>
       )}
-      {state === "ready" && next && (
+      {contentState === "upcoming" && next && (
         <>
           <NextEvent schedule={next} />
           <UpcomingTimeline schedules={laterSchedules} />
         </>
       )}
-      {state === "ready" && !next && <EmptyOverview />}
+      {contentState === "empty" && <EmptyOverview />}
     </div>
   );
 }
@@ -170,7 +171,7 @@ function NextEvent({ schedule }: { schedule: Schedule }) {
         {schedule.origin_location && (
           <p className="mt-1 pl-6 text-sm text-text-muted">From {locationLabel(schedule.origin_location)}</p>
         )}
-        <Link href={"/schedules?open=" + schedule.id} className="mt-7 inline-flex min-h-11 items-center gap-2 rounded-lg border border-border px-4 text-sm font-semibold transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-primary">
+        <Link href={getScheduleHref(schedule.id)} className="mt-7 inline-flex min-h-11 items-center gap-2 rounded-lg border border-border px-4 text-sm font-semibold transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-primary">
           View schedule
           <ArrowUpRight className="size-4" aria-hidden="true" />
         </Link>
@@ -245,7 +246,7 @@ function UpcomingTimeline({ schedules }: { schedules: Schedule[] }) {
         <ul className="mt-3 divide-y divide-border border-y border-border">
           {schedules.map((schedule) => (
             <li key={schedule.id}>
-              <Link href={"/schedules?open=" + schedule.id} className="group grid min-h-[5.25rem] gap-2 py-4 transition-colors hover:bg-surface-hover/40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand-primary sm:grid-cols-[7.5rem_minmax(0,1fr)_auto] sm:items-center sm:gap-5 sm:px-3">
+              <Link href={getScheduleHref(schedule.id)} className="group grid min-h-[5.25rem] gap-2 py-4 transition-colors hover:bg-surface-hover/40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand-primary sm:grid-cols-[7.5rem_minmax(0,1fr)_auto] sm:items-center sm:gap-5 sm:px-3">
                 <span className="text-sm tabular-nums text-text-muted">{formatDateTime(schedule.target_datetime, schedule.timezone)}</span>
                 <span className="min-w-0">
                   <span className="block truncate font-medium group-hover:text-brand-primary">{schedule.title}</span>
