@@ -16,7 +16,7 @@ import { isCurrentGeneration, isCurrentGenerationForKey } from "@/lib/request-ge
 import { hasRouteLocations, hasWeatherLocation } from "@/lib/location-aware-state.js";
 import { historicalEstimateNotice, PAST_SCHEDULE_BANNER_TITLE, showPastScheduleNotices, showPostDepartureRouteWarning, showStaleEstimateWarning, showTravelTrafficCard } from "@/lib/schedule-warning-display.js";
 import { RouteComparisonMap } from "./route-comparison-map";
-import { SavedPlacesPanel, useSavedPlaces } from "./saved-places";
+import { useSavedPlaces } from "./saved-places";
 import { savedPlaceLocation } from "@/lib/saved-place.js";
 
 type FormValues = Omit<ScheduleInput, "target_datetime" | "time_intent" | "preparation_duration_minutes" | "title"> & { title: string; target_datetime: string; time_intent: ScheduleIntent | ""; preparation_duration_minutes: number | null };
@@ -820,7 +820,6 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
   return (
     <main className="min-h-screen bg-[var(--background)] text-[var(--text-primary)]">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
-        <SavedPlacesPanel />
         <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
           <div><h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Schedules</h1><p className="mt-2 max-w-xl text-[var(--text-secondary)]">A clear view of what&apos;s ahead and what&apos;s already passed.</p></div>
           <button className={primaryButton} onClick={openCreate} disabled={!isLoaded || loading}><PlusIcon /> Plan a schedule</button>

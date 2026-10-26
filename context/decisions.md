@@ -310,3 +310,8 @@
 - Decision: use the existing semantic CSS token roles for a dark-only SmartMeet interface with ink and slate surfaces, cool-blue actions and navigation, and distinct accessible status colors. Keep Tailwind v4's CSS-first `@theme inline` mapping and use Lucide React for interface icons.
 - Shared authenticated routes use an App Router route group so Dashboard, Schedules, Saved Places, and Settings share navigation without changing their public URL paths. Clerk-protected return destinations take precedence; Dashboard is the fallback after sign-in or sign-up.
 - Scope for the first design phase is the global design foundation, authenticated shell/navigation, and route shells. Existing schedule, notification, Saved Places, route, weather, and map behavior remains in place.
+
+## DEC-052 - Report browser subscription and account registration separately
+- Context: Web Push exposes the current browser's `PushSubscription`, and the backend supports authenticated registration and removal, but no read endpoint to check whether an existing browser subscription is registered to the current SmartMeet account.
+- Decision: Settings show browser permission, local browser subscription, and account registration as distinct states. Existing local subscriptions remain "not verified" for the account until the authenticated registration call succeeds in the current page session. A test push is available only after that confirmed registration.
+- Consequence: Returning users with an existing browser subscription may need to select Register this browser once per page session before sending a test. Do not infer backend registration or delivery from browser permission alone.

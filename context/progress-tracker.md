@@ -1,5 +1,16 @@
 ## Current Progress
 
+### SmartMeet UI Redesign Phase 4 - Saved Places and Settings
+
+- `/saved-places` now mounts the existing authenticated Saved Places manager. It preserves Home/School/Work/Gym and custom aliases, saved-place CRUD, optional addresses and coordinates, GPS selection, map-pin selection, panning/zoom, reverse geocoding, and existing snapshots in schedules. The duplicate management panel was removed from Schedules; schedule creation still uses the existing saved-place hook. The four shared navigation destinations and Clerk-protected route-group layout are unchanged.
+- `/settings` now hosts the existing notification permission, Web Push registration/removal, test notification, and notification preview controls. Dashboard no longer duplicates those controls. No other persisted preferences were present, so none were invented.
+- Settings distinguish browser permission, local browser subscription, account registration, and test-push outcome. Since the backend has no read-subscription endpoint, an existing browser subscription is reported as not verified for the account until the authenticated registration call succeeds in the current page session. Tests are available only after confirmed registration. Push-service acceptance is not described as device display or delivery.
+- Recorded DEC-052 in `context/decisions.md`. No backend/API/schema/migration, schedule, reminder, provider, or authentication changes.
+- Automated verification: `npm run test:frontend`, `npx tsc --noEmit`, `npm run lint`, `npm run build`, and `git diff --check` passed. Added notification-state and route regression tests; existing saved-place loading/empty/error, CRUD API, map interaction/layout, notification preview, push API success/rejection, and Dashboard/Schedules checks remain in the frontend suite. Existing Node module-type notices remain for TS-strip tests.
+- Browser verification: unavailable in this run. The VS Code integrated preview could not be accessed because the computer-use inventory returned no apps or browsers and reported that its native pipe could not connect. No saved places, schedules, subscriptions, or preferences were changed.
+- Remaining limitation: the integrated map was not live-verified in this run. The tracker already records an unresolved white-map/loading issue despite successful tile requests; this Phase 4 change preserves the map component and controls but does not claim that issue is fixed. Recheck map rendering at desktop and mobile when the VS Code preview is available.
+
+
 ### SmartMeet UI Redesign Phase 3 - Schedules Experience
 
 - Reworked the existing Schedules list into chronological Upcoming, Past, and Cancelled or completed groups using the API-provided `status`, `is_past`, and `target_datetime` fields. Upcoming events sort earliest first; past and inactive records are retained for management.

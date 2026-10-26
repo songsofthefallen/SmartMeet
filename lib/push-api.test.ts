@@ -43,3 +43,10 @@ test("test push rejects malformed backend responses", async () => {
   try { await assert.rejects(scheduleApi.testPushNotification("clerk-token"), /invalid response/i); }
   finally { globalThis.fetch = originalFetch; }
 });
+
+test("test push reports service failures instead of treating them as accepted", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ detail: "Push service is unavailable." }), { status: 503 });
+  try { await assert.rejects(scheduleApi.testPushNotification("clerk-token"), /Push service is unavailable/i); }
+  finally { globalThis.fetch = originalFetch; }
+});
