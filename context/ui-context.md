@@ -19,6 +19,10 @@ All interface colors live in CSS custom properties in `app/globals.css` and are 
 | Brand accent | `--brand-primary` | `#79AFFF` |
 | Brand hover | `--brand-hover` | `#9AC3FF` |
 | Brand subtle | `--brand-subtle` | `#182D46` |
+| Cyan accent | `--brand-cyan` | `#5BCBFF` |
+| Cyan subtle surface | `--brand-cyan-subtle` | `#112D3E` |
+| Violet accent | `--brand-violet` | `#9B8EFF` |
+| Violet subtle surface | `--brand-violet-subtle` | `#262241` |
 | Error | `--state-error` | `#FF9797` |
 | Error background | `--state-error-bg` | `#3B2228` |
 | Success | `--state-success` | `#7BD9A5` |
@@ -47,7 +51,7 @@ Use Lucide React (`lucide-react`) with consistent stroke weight. Icon-only contr
 
 ## Layout patterns
 
-- **Public landing page:** spacious centered header, editorial two-column hero and account composition on desktop, compact feature highlights, and a decorative route illustration labeled as illustrative. Keep Clerk's real sign-in and sign-up forms in the account panel and stack content at narrow widths.
+- **Public landing page:** spacious centered header and editorial two-column hero/account composition on desktop. The hero may use an optimized local night-map illustration behind real HTML copy, with the route summary explicitly labeled as illustrative. Arrange compact icon highlights in an even row on wide screens and stack the hero, highlights, and Clerk account panel on narrow screens.
 
 - **Shared signed-in shell:** persistent desktop navigation rail; compact horizontal navigation on mobile; consistent account access and clear current-page indication.
 - **Dashboard:** daily overview led by the next known event and supported planning information.

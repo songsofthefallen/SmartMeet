@@ -13,6 +13,10 @@
   --brand-primary: #79AFFF;
   --brand-hover: #9AC3FF;
   --brand-subtle: #182D46;
+  --brand-cyan: #5BCBFF;
+  --brand-cyan-subtle: #112D3E;
+  --brand-violet: #9B8EFF;
+  --brand-violet-subtle: #262241;
   --state-error: #FF9797;
   --state-error-bg: #3B2228;
   --state-success: #7BD9A5;
@@ -39,6 +43,10 @@
   --color-brand-primary: var(--brand-primary);
   --color-brand-hover: var(--brand-hover);
   --color-brand-subtle: var(--brand-subtle);
+  --color-brand-cyan: var(--brand-cyan);
+  --color-brand-cyan-subtle: var(--brand-cyan-subtle);
+  --color-brand-violet: var(--brand-violet);
+  --color-brand-violet-subtle: var(--brand-violet-subtle);
   --color-state-error: var(--state-error);
   --color-state-error-bg: var(--state-error-bg);
   --color-state-success: var(--state-success);
@@ -86,5 +94,59 @@ body {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+.landing-hero-art {
+  opacity: 0.86;
+}
+
+.landing-hero-art::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background:
+    linear-gradient(90deg, var(--background) 0%, color-mix(in srgb, var(--background) 84%, transparent) 24%, color-mix(in srgb, var(--background) 18%, transparent) 55%, color-mix(in srgb, var(--background) 24%, transparent) 76%, var(--background) 100%),
+    linear-gradient(180deg, var(--background) 0%, transparent 18%, transparent 72%, var(--background) 100%);
+}
+
+.landing-clerk .cl-rootBox {
+  width: 100%;
+  max-width: none;
+}
+
+.landing-clerk .cl-cardBox {
+  width: 100% !important;
+  max-width: none !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.landing-clerk .cl-card {
+  width: 100% !important;
+  max-width: none !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.landing-clerk .cl-footer {
+  display: none !important;
+}
+
+@media (max-width: 1023px) {
+  .landing-hero-art {
+    opacity: 0.18;
+  }
+
+  .landing-hero-art::after {
+    background:
+      linear-gradient(90deg, var(--background) 0%, color-mix(in srgb, var(--background) 88%, transparent) 42%, var(--background) 100%),
+      linear-gradient(180deg, var(--background) 0%, color-mix(in srgb, var(--background) 48%, transparent) 46%, var(--background) 100%);
   }
 }
