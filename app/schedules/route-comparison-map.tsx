@@ -1,11 +1,8 @@
 "use client";
 
-import { useAuth } from "@clerk/nextjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TomTomMap } from "@tomtom-org/maps-sdk/map";
-import type { LocationSelection, RouteAlternativeEstimate, RouteLandmarkEstimate } from "@/lib/schedule-api";
-import { scheduleApi } from "@/lib/schedule-api";
-import { routeLineDiagnostic, sampleRouteGeometry } from "@/lib/route-overlay-diagnostics.js";
+import type { LocationSelection, RouteAlternativeEstimate } from "@/lib/schedule-api";
 import { endpointFeatureCollection, isValidMapCoordinate, routeFeatureCollection, ROUTE_COLORS, selectedRouteOrFirst } from "@/lib/route-map-geometry.js";
 import { createSmartMeetMap } from "@/lib/tomtom-map";
 
@@ -46,20 +43,15 @@ function setEndpointLayers(map: MapLike, origin: LocationSelection | null, desti
 }
 
 export function RouteComparisonMap({ routes, selectedRouteId, origin, destination, mode = "compare" }: { routes: RouteAlternativeEstimate[]; selectedRouteId: string | null; origin: LocationSelection | null; destination: LocationSelection | null; mode?: "compare" | "view" }) {
-  const developmentDiagnostics = process.env.NODE_ENV !== "production";
-  const { getToken } = useAuth();
   const [mapError, setMapError] = useState<string | null>(browserMapApiKey ? null : "Interactive map unavailable: browser map key is missing.");
   const [mapLoading, setMapLoading] = useState(Boolean(browserMapApiKey));
   const [mapAttempt, setMapAttempt] = useState(0);
-  const [landmarkResult, setLandmarkResult] = useState<{ key: string; items: RouteLandmarkEstimate[]; failed: boolean } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<TomTomMap | null>(null);
   const readyRef = useRef(false);
   const selectedRoute = selectedRouteOrFirst(routes, selectedRouteId);
   const activeRouteId = selectedRoute?.route_id ?? null;
   const visibleRoutes = useMemo(() => mode === "view" && selectedRoute ? [selectedRoute] : routes, [mode, routes, selectedRoute]);
-  const selectedPoints = useMemo(() => selectedRoute?.geometry ?? [], [selectedRoute]);
-  const landmarkKey = selectedRoute ? `${selectedRoute.route_id}:${JSON.stringify(selectedPoints)}` : "";
   const fitPoints = useMemo(() => fitCoordinates(selectedRoute, origin, destination), [selectedRoute, origin, destination]);
   const mapCenter = useMemo(() => {
     if (fitPoints.length) {
@@ -139,17 +131,7 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
     if (readyRef.current) fitRoute();
   }, [activeRouteId, fitRoute]);
 
-  useEffect(() => {
-    if (!selectedRoute || selectedPoints.length < 2 || !landmarkKey) return;
-    let active = true;
-    void getToken().then((token) => scheduleApi.routeLandmarks(selectedPoints, token)).then((items) => { if (active) setLandmarkResult({ key: landmarkKey, items, failed: false }); }).catch(() => { if (active) setLandmarkResult({ key: landmarkKey, items: [], failed: true }); });
-    return () => { active = false; };
-  }, [getToken, landmarkKey, selectedPoints, selectedRoute]);
-
   if (!routes.length && !origin && !destination) return null;
-  const landmarks = landmarkResult?.key === landmarkKey ? landmarkResult.items : [];
-  const overlayDiagnostics = developmentDiagnostics && selectedRoute ? routeLineDiagnostic(selectedRoute, true, (point) => `${point.longitude},${point.latitude}`) : null;
-  const selectedSamples = developmentDiagnostics && selectedRoute ? sampleRouteGeometry(selectedRoute.geometry ?? []) : [];
 
   return <figure className="mt-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)]" aria-label={mode === "view" ? "Map of the saved driving route" : "Map comparing driving routes"}>
     <div className="relative h-[min(62vh,30rem)] min-h-72 w-full sm:min-h-80">
@@ -161,12 +143,6 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
     </div>
     <figcaption className="flex flex-wrap gap-x-4 gap-y-2 border-t border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
       {visibleRoutes.map((route) => { const index = routes.indexOf(route); return <span key={route.route_id} className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ROUTE_COLORS[index % ROUTE_COLORS.length] }}/>{mode === "view" ? "Saved selected route" : `Route ${index + 1}${activeRouteId === route.route_id ? " · Selected" : ""}`}</span>; })}
-      <span className="inline-flex items-center gap-1.5"><span className="font-bold text-[var(--state-error)]">+</span>Hospital <span className="ml-2 font-bold text-[#7C3AED]">S</span>School</span>
-      {landmarkResult?.key === landmarkKey && landmarkResult.failed && <span className="basis-full">Landmarks could not be loaded for this route.</span>}
-      {landmarkResult?.key === landmarkKey && !landmarkResult.failed && landmarks.length === 0 && <span className="basis-full">No hospitals or schools were found near this route.</span>}
-      {landmarks.length > 0 && <span className="basis-full text-[var(--text-primary)]">Near selected route: {landmarks.slice(0, 8).map((landmark) => landmark.name).join(" · ")}{landmarks.length > 8 ? ` · +${landmarks.length - 8} more` : ""}</span>}
-      <span className="basis-full text-[var(--text-muted)]">Map © TomTom · Nearby labels depend on map coverage.</span>
     </figcaption>
-    {overlayDiagnostics && <details className="border-t border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]"><summary className="cursor-pointer font-medium">Development route geometry diagnostics</summary><p className="mt-2">Home/request origin: {origin?.latitude}, {origin?.longitude}. Raw route start: {selectedRoute.geometry?.[0]?.latitude}, {selectedRoute.geometry?.[0]?.longitude}. Displayed marker uses the request origin.</p><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify({ route: overlayDiagnostics, evenly_spaced_samples: selectedSamples.map(({ index, point }) => ({ index, latitude: (point as Coordinate).latitude, longitude: (point as Coordinate).longitude })) }, null, 2)}</pre></details>}
   </figure>;
 }

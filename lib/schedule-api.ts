@@ -1,5 +1,3 @@
-import { routeGeometryDiagnostic } from "./route-overlay-diagnostics.js";
-
 export type ScheduleIntent = "arrival" | "departure";
 export type ScheduleStatus = "active" | "cancelled" | "completed";
 export type LocationSelection = {
@@ -40,7 +38,6 @@ export type TrafficSectionEstimate = {
   end_coordinates: { latitude: number; longitude: number } | null;
 };
 export type RouteAlternativeEstimate = { route_id: string; duration_seconds: number; duration_minutes: number; distance_meters: number | null; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: TrafficSectionEstimate[]; road_names: string[]; geometry?: { latitude: number; longitude: number }[] };
-export type RouteLandmarkEstimate = { name: string; category: "hospital" | "school"; latitude: number; longitude: number };
 
 export type Schedule = {
   id: number;
@@ -351,11 +348,6 @@ function isRouteOptions(value: unknown): value is { alternatives: RouteAlternati
     (option.geometry === undefined || (Array.isArray(option.geometry) && option.geometry.every((point) => isRecord(point) && typeof point.latitude === "number" && typeof point.longitude === "number"))));
 }
 
-function isRouteLandmarks(value: unknown): value is RouteLandmarkEstimate[] {
-  return Array.isArray(value) && value.every((item) => isRecord(item) && typeof item.name === "string" &&
-    (item.category === "hospital" || item.category === "school") && typeof item.latitude === "number" && typeof item.longitude === "number");
-}
-
 export const scheduleApi = {
   async savedPlaceMap(center: { latitude: number; longitude: number }, zoom: number, token: string | null, options: ScheduleRequestOptions = {}): Promise<Blob> {
     if (!token) throw new ScheduleApiError("Your session is unavailable. Refresh the page or sign in again.", 401);
@@ -402,31 +394,8 @@ export const scheduleApi = {
   testPushNotification(token: string | null, scheduleId?: number, options?: ScheduleRequestOptions) {
     return request<{ accepted: true }>("/push/test", token, "POST", scheduleId ? { schedule_id: scheduleId } : {}, (value): value is { accepted: true } => isRecord(value) && value.accepted === true, options);
   },
-  routeLandmarks(route_points: NonNullable<RouteAlternativeEstimate["geometry"]>, token: string | null, options?: ScheduleRequestOptions) {
-    return request<RouteLandmarkEstimate[]>("/schedules/route-landmarks", token, "POST", { route_points }, isRouteLandmarks, options);
-  },
   async routeOptions(input: Pick<ScheduleInput, "origin_location" | "location" | "time_intent" | "target_datetime">, token: string | null, options?: ScheduleRequestOptions) {
-    const result = await request<{
-      alternatives: RouteAlternativeEstimate[];
-      selected_route_id?: string;
-      duration_seconds?: number;
-      duration_minutes?: number;
-      distance_meters?: number | null;
-    }>("/schedules/route-options", token, "POST", input, isRouteOptions, options);
-    if (process.env.NODE_ENV !== "production") {
-      console.info("[SmartMeet route diagnostics] route-options response", {
-        origin: input.origin_location ? { latitude: input.origin_location.latitude, longitude: input.origin_location.longitude } : null,
-        destination: input.location ? { latitude: input.location.latitude, longitude: input.location.longitude } : null,
-        backend_selected_route_id: result.selected_route_id ?? null,
-        response_estimate: {
-          distance_meters: result.distance_meters ?? null,
-          duration_seconds: result.duration_seconds ?? null,
-          duration_minutes: result.duration_minutes ?? null,
-        },
-        routes: result.alternatives.map(routeGeometryDiagnostic),
-      });
-    }
-    return result;
+    return request<{ alternatives: RouteAlternativeEstimate[] }>("/schedules/route-options", token, "POST", input, isRouteOptions, options);
   },
   searchLocations(query: string, token: string | null, options?: ScheduleRequestOptions) {
     return request<{ results: LocationSelection[] }>("/locations/search", token, "POST", { query }, isLocationSearch, options);
