@@ -1,3 +1,5 @@
+import { routeGeometryDiagnostic } from "./route-overlay-diagnostics.js";
+
 export type ScheduleIntent = "arrival" | "departure";
 export type ScheduleStatus = "active" | "cancelled" | "completed";
 export type LocationSelection = {
@@ -403,27 +405,28 @@ export const scheduleApi = {
   routeLandmarks(route_points: NonNullable<RouteAlternativeEstimate["geometry"]>, token: string | null, options?: ScheduleRequestOptions) {
     return request<RouteLandmarkEstimate[]>("/schedules/route-landmarks", token, "POST", { route_points }, isRouteLandmarks, options);
   },
-  async routeMap(bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number }, token: string | null, options: ScheduleRequestOptions = {}): Promise<Blob> {
-    const query = new URLSearchParams(Object.entries(bounds).map(([key, value]) => [key, String(value)]));
-    let response: Response;
-    try {
-      response = await fetch(`${apiBaseUrl}/schedules/route-map?${query}`, {
-        headers: { Accept: "image/png", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        signal: options.signal,
+  async routeOptions(input: Pick<ScheduleInput, "origin_location" | "location" | "time_intent" | "target_datetime">, token: string | null, options?: ScheduleRequestOptions) {
+    const result = await request<{
+      alternatives: RouteAlternativeEstimate[];
+      selected_route_id?: string;
+      duration_seconds?: number;
+      duration_minutes?: number;
+      distance_meters?: number | null;
+    }>("/schedules/route-options", token, "POST", input, isRouteOptions, options);
+    if (process.env.NODE_ENV !== "production") {
+      console.info("[SmartMeet route diagnostics] route-options response", {
+        origin: input.origin_location ? { latitude: input.origin_location.latitude, longitude: input.origin_location.longitude } : null,
+        destination: input.location ? { latitude: input.location.latitude, longitude: input.location.longitude } : null,
+        backend_selected_route_id: result.selected_route_id ?? null,
+        response_estimate: {
+          distance_meters: result.distance_meters ?? null,
+          duration_seconds: result.duration_seconds ?? null,
+          duration_minutes: result.duration_minutes ?? null,
+        },
+        routes: result.alternatives.map(routeGeometryDiagnostic),
       });
-    } catch (error) {
-      if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
-        throw new ScheduleApiError("Request cancelled.", null, null, "cancelled");
-      }
-      throw new ScheduleApiError("Map preview could not be loaded. Route details are still available.", null);
     }
-    if (!response.ok) {
-      throw new ScheduleApiError("Map preview could not be loaded. Route details are still available.", response.status);
-    }
-    return response.blob();
-  },
-  routeOptions(input: Pick<ScheduleInput, "origin_location" | "location" | "time_intent" | "target_datetime">, token: string | null, options?: ScheduleRequestOptions) {
-    return request<{ alternatives: RouteAlternativeEstimate[] }>("/schedules/route-options", token, "POST", input, isRouteOptions, options);
+    return result;
   },
   searchLocations(query: string, token: string | null, options?: ScheduleRequestOptions) {
     return request<{ results: LocationSelection[] }>("/locations/search", token, "POST", { query }, isLocationSearch, options);

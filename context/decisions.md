@@ -315,3 +315,9 @@
 - Context: Web Push exposes the current browser's `PushSubscription`, and the backend supports authenticated registration and removal, but no read endpoint to check whether an existing browser subscription is registered to the current SmartMeet account.
 - Decision: Settings show browser permission, local browser subscription, and account registration as distinct states. Existing local subscriptions remain "not verified" for the account until the authenticated registration call succeeds in the current page session. A test push is available only after that confirmed registration.
 - Consequence: Returning users with an existing browser subscription may need to select Register this browser once per page session before sending a test. Do not infer backend registration or delivery from browser permission alone.
+
+## DEC-053 - Render route previews on the interactive TomTom map
+- Status: Confirmed
+- Context: Schedule route previews previously used TomTom Static Image API rasters with a frontend SVG route overlay, while Saved Places used the interactive Maps SDK.
+- Decision: Use the same `@tomtom-org/maps-sdk` `streetDark` map and restricted `NEXT_PUBLIC_TOMTOM_MAPS_API_KEY` for schedule route previews. Render complete FastAPI route geometry as GeoJSON `[longitude, latitude]` LineStrings, keep submitted origin/destination markers separate, and fit the selected route bounds on request or selection. Keep routing and traffic calculations in FastAPI.
+- Consequence: Route map tiles render in the browser using the separately restricted SDK key. The route preview no longer calls the server-side `/schedules/route-map` image proxy; backend endpoint implementation is retained without changing backend behavior.

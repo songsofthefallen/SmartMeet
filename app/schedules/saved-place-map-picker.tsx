@@ -6,6 +6,7 @@ import type { TomTomMap } from "@tomtom-org/maps-sdk/map";
 import styles from "./saved-place-map-picker.module.css";
 import { scheduleApi, type SavedPlaceSource } from "@/lib/schedule-api";
 import { centerFromMap, initialMapView, isValidCoordinate, mapFailureMessage, subscribeToMapCenter, zoomAroundCenter } from "@/lib/saved-place-map-interaction.js";
+import { createSmartMeetMap } from "@/lib/tomtom-map";
 
 type Coordinate = { latitude: number; longitude: number };
 type ConfirmedPin = Coordinate & { address: string | null; source: SavedPlaceSource };
@@ -90,26 +91,10 @@ export function SavedPlaceMapPicker({ initial, source, onConfirm, onCancel }: {
     };
     void (async () => {
       try {
-        const [{ TomTomMap }, { setWorkerUrl }] = await Promise.all([
-          import("@tomtom-org/maps-sdk/map"),
-          import("maplibre-gl"),
-        ]);
         if (disposed || !mapContainer.current) return;
-        setWorkerUrl("/maplibre-gl-worker.mjs");
-        map = new TomTomMap({
-          apiKey,
-          style: "streetDark",
-          mapLibre: {
-            container: mapContainer.current,
-            ...initialMapView(initial),
-            minZoom: 0,
-            maxZoom: 20,
-            dragPan: true,
-            scrollZoom: false,
-            pitchWithRotate: false,
-            dragRotate: false,
-          },
-        });
+        const mapView = initialMapView(initial);
+        map = await createSmartMeetMap(mapContainer.current, apiKey, mapView.center, mapView.zoom, false);
+        if (disposed) { map.mapLibreMap.remove(); return; }
         mapRef.current = map;
         unsubscribeCenter = subscribeToMapCenter(map.mapLibreMap, updateCenter, () => {
           if (settleTimer !== undefined) window.clearTimeout(settleTimer);

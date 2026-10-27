@@ -1,145 +1,163 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import Image from "next/image";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { TomTomMap } from "@tomtom-org/maps-sdk/map";
 import type { LocationSelection, RouteAlternativeEstimate, RouteLandmarkEstimate } from "@/lib/schedule-api";
 import { scheduleApi } from "@/lib/schedule-api";
+import { routeLineDiagnostic, sampleRouteGeometry } from "@/lib/route-overlay-diagnostics.js";
+import { endpointFeatureCollection, isValidMapCoordinate, routeFeatureCollection, ROUTE_COLORS, selectedRouteOrFirst } from "@/lib/route-map-geometry.js";
+import { createSmartMeetMap } from "@/lib/tomtom-map";
 
-const ROUTE_COLORS = ["#2563EB", "#DC2626", "#7C3AED", "#059669", "#D97706", "#DB2777"];
-const IMAGE_WIDTH = 960;
-const IMAGE_HEIGHT = 420;
-const MERCATOR_LIMIT = 85.05112878;
+const browserMapApiKey = process.env.NEXT_PUBLIC_TOMTOM_MAPS_API_KEY?.trim();
+const routeSourceId = "smartmeet-routes";
+const control = "min-h-9 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 text-xs font-medium text-[var(--text-primary)] shadow hover:bg-[var(--surface-hover)] disabled:opacity-50";
 
-function mercatorY(latitude: number): number {
-  const radians = Math.max(-MERCATOR_LIMIT, Math.min(MERCATOR_LIMIT, latitude)) * Math.PI / 180;
-  return Math.log(Math.tan(Math.PI / 4 + radians / 2));
+type Coordinate = { latitude: number; longitude: number };
+type MapLike = NonNullable<TomTomMap["mapLibreMap"]>;
+
+const validCoordinate = isValidMapCoordinate;
+
+function fitCoordinates(route: RouteAlternativeEstimate | undefined, origin: LocationSelection | null, destination: LocationSelection | null) {
+  const geometry = (route?.geometry ?? []).filter(validCoordinate);
+  return geometry.length ? geometry : [origin, destination].filter((point): point is LocationSelection => Boolean(point && validCoordinate(point)));
 }
 
-function inverseMercatorY(value: number): number {
-  return (2 * Math.atan(Math.exp(value)) - Math.PI / 2) * 180 / Math.PI;
+function setRouteLayers(map: MapLike, routes: RouteAlternativeEstimate[], selectedRouteId: string | null) {
+  const data = routeFeatureCollection(routes, selectedRouteId);
+  const source = map.getSource(routeSourceId) as { setData: (value: typeof data) => void } | undefined;
+  if (source) source.setData(data);
+  else {
+    map.addSource(routeSourceId, { type: "geojson", data: data as never });
+    map.addLayer({ id: "smartmeet-route-casing", type: "line", source: routeSourceId, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#FFFFFF", "line-width": ["case", ["get", "selected"], 10, 6], "line-opacity": ["case", ["get", "selected"], 0.95, 0.4] } });
+    map.addLayer({ id: "smartmeet-route-lines", type: "line", source: routeSourceId, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": ["case", ["get", "selected"], 6, 3], "line-opacity": ["case", ["get", "selected"], 1, 0.65] } });
+  }
+}
+
+function setEndpointLayers(map: MapLike, origin: LocationSelection | null, destination: LocationSelection | null, fallback: Coordinate[]) {
+  const data = endpointFeatureCollection(origin, destination, fallback);
+  const source = map.getSource("smartmeet-endpoints") as { setData: (value: typeof data) => void } | undefined;
+  if (source) source.setData(data);
+  else {
+    map.addSource("smartmeet-endpoints", { type: "geojson", data: data as never });
+    map.addLayer({ id: "smartmeet-endpoint-circles", type: "circle", source: "smartmeet-endpoints", paint: { "circle-radius": 12, "circle-color": ["get", "color"], "circle-stroke-color": "#FFFFFF", "circle-stroke-width": 3 } });
+    map.addLayer({ id: "smartmeet-endpoint-labels", type: "symbol", source: "smartmeet-endpoints", layout: { "text-field": ["get", "label"], "text-size": 12, "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"] }, paint: { "text-color": "#FFFFFF" } });
+  }
 }
 
 export function RouteComparisonMap({ routes, selectedRouteId, origin, destination, mode = "compare" }: { routes: RouteAlternativeEstimate[]; selectedRouteId: string | null; origin: LocationSelection | null; destination: LocationSelection | null; mode?: "compare" | "view" }) {
+  const developmentDiagnostics = process.env.NODE_ENV !== "production";
   const { getToken } = useAuth();
-  const [image, setImage] = useState<{ key: string; url: string } | null>(null);
-  const [unavailableKey, setUnavailableKey] = useState<string | null>(null);
+  const [mapError, setMapError] = useState<string | null>(browserMapApiKey ? null : "Interactive map unavailable: browser map key is missing.");
+  const [mapLoading, setMapLoading] = useState(Boolean(browserMapApiKey));
+  const [mapAttempt, setMapAttempt] = useState(0);
   const [landmarkResult, setLandmarkResult] = useState<{ key: string; items: RouteLandmarkEstimate[]; failed: boolean } | null>(null);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = useState(false);
-  const drag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
-  const selectedRoute = routes.find((route) => route.route_id === selectedRouteId) ?? routes[0];
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<TomTomMap | null>(null);
+  const readyRef = useRef(false);
+  const selectedRoute = selectedRouteOrFirst(routes, selectedRouteId);
   const activeRouteId = selectedRoute?.route_id ?? null;
   const visibleRoutes = useMemo(() => mode === "view" && selectedRoute ? [selectedRoute] : routes, [mode, routes, selectedRoute]);
   const selectedPoints = useMemo(() => selectedRoute?.geometry ?? [], [selectedRoute]);
   const landmarkKey = selectedRoute ? `${selectedRoute.route_id}:${JSON.stringify(selectedPoints)}` : "";
-  const map = useMemo(() => {
-    const points = [
-      ...visibleRoutes.flatMap((route) => route.geometry ?? []),
-      ...(origin ? [{ latitude: origin.latitude, longitude: origin.longitude }] : []),
-      ...(destination ? [{ latitude: destination.latitude, longitude: destination.longitude }] : []),
-    ];
-    if (points.length < 2) return null;
-    let minX = Math.min(...points.map((point) => point.longitude)) * Math.PI / 180;
-    let maxX = Math.max(...points.map((point) => point.longitude)) * Math.PI / 180;
-    let minY = Math.min(...points.map((point) => mercatorY(point.latitude)));
-    let maxY = Math.max(...points.map((point) => mercatorY(point.latitude)));
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
-    let width = Math.max(maxX - minX, 0.0001) * 1.28;
-    let height = Math.max(maxY - minY, 0.0001) * 1.28;
-    const aspect = IMAGE_WIDTH / IMAGE_HEIGHT;
-    if (width / height < aspect) width = height * aspect;
-    else height = width / aspect;
-    const worldSpanX = width / (2 * Math.PI);
-    const worldSpanY = height / (2 * Math.PI);
-    const zoomFit = Math.min(IMAGE_WIDTH / (256 * worldSpanX), IMAGE_HEIGHT / (256 * worldSpanY));
-    const zoom = Math.max(0, Math.min(20, Math.floor(Math.log2(zoomFit) + 1e-7)));
-    width = IMAGE_WIDTH * 2 * Math.PI / (256 * 2 ** zoom);
-    height = IMAGE_HEIGHT * 2 * Math.PI / (256 * 2 ** zoom);
-    minX = centerX - width / 2;
-    maxX = centerX + width / 2;
-    minY = centerY - height / 2;
-    maxY = centerY + height / 2;
-    const bounds = {
-      min_lon: Math.max(-180, minX * 180 / Math.PI),
-      min_lat: Math.max(-MERCATOR_LIMIT, inverseMercatorY(minY)),
-      max_lon: Math.min(180, maxX * 180 / Math.PI),
-      max_lat: Math.min(MERCATOR_LIMIT, inverseMercatorY(maxY)),
-    };
-    return { bounds, minX, maxX, minY, maxY };
-  }, [visibleRoutes, origin, destination]);
+  const fitPoints = useMemo(() => fitCoordinates(selectedRoute, origin, destination), [selectedRoute, origin, destination]);
+  const mapCenter = useMemo(() => {
+    if (fitPoints.length) {
+      return fitPoints.reduce((center, point) => ({ latitude: center.latitude + point.latitude / fitPoints.length, longitude: center.longitude + point.longitude / fitPoints.length }), { latitude: 0, longitude: 0 });
+    }
+    return { latitude: 14.5995, longitude: 120.9842 };
+  }, [fitPoints]);
+  const currentMapData = useRef({ visibleRoutes, activeRouteId, origin, destination, fitPoints, fitRoute: () => undefined as void });
+
+  const fitRoute = useCallback(() => {
+    const map = mapRef.current?.mapLibreMap;
+    if (!map || !fitPoints.length) return;
+    if (fitPoints.length === 1) {
+      map.easeTo({ center: [fitPoints[0].longitude, fitPoints[0].latitude], zoom: 14, duration: 350 });
+      return;
+    }
+    const longitudes = fitPoints.map((point) => point.longitude);
+    const latitudes = fitPoints.map((point) => point.latitude);
+    map.fitBounds([[Math.min(...longitudes), Math.min(...latitudes)], [Math.max(...longitudes), Math.max(...latitudes)]], { padding: { top: 54, right: 48, bottom: 54, left: 48 }, maxZoom: 16, duration: 350 });
+  }, [fitPoints]);
+  useEffect(() => { currentMapData.current = { visibleRoutes, activeRouteId, origin, destination, fitPoints, fitRoute }; }, [visibleRoutes, activeRouteId, origin, destination, fitPoints, fitRoute]);
 
   useEffect(() => {
-    if (selectedPoints.length < 2 || !landmarkKey) return;
-    let active = true;
-    void getToken().then((token) => scheduleApi.routeLandmarks(selectedPoints, token)).then((items) => {
-      if (active) setLandmarkResult({ key: landmarkKey, items, failed: false });
-    }).catch(() => {
-      if (active) setLandmarkResult({ key: landmarkKey, items: [], failed: true });
-    });
-    return () => { active = false; };
-  }, [getToken, landmarkKey, selectedPoints]);
-
-  useEffect(() => {
-    if (!map) return;
-    let active = true;
-    let createdUrl: string | null = null;
-    const key = JSON.stringify(map.bounds);
-    void getToken().then((token) => scheduleApi.routeMap(map.bounds, token)).then((blob) => {
-      if (!active) return;
-      createdUrl = URL.createObjectURL(blob);
-      setImage({ key, url: createdUrl });
-    }).catch(() => {
-      if (active) setUnavailableKey(key);
-    });
+    if (!browserMapApiKey || !containerRef.current) return;
+    let disposed = false;
+    let map: TomTomMap | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let loadedHandler: (() => void) | null = null;
+    let errorHandler: (() => void) | null = null;
+    void (async () => {
+      try {
+        if (disposed || !containerRef.current) return;
+        map = await createSmartMeetMap(containerRef.current, browserMapApiKey, [mapCenter.longitude, mapCenter.latitude], 12, true);
+        if (disposed) { map.mapLibreMap.remove(); return; }
+        mapRef.current = map;
+        loadedHandler = () => {
+          if (disposed) return;
+          readyRef.current = true;
+          setMapLoading(false);
+          setMapError(null);
+          const nativeMap = map!.mapLibreMap;
+          const current = currentMapData.current;
+          setRouteLayers(nativeMap, current.visibleRoutes, current.activeRouteId);
+          setEndpointLayers(nativeMap, current.origin, current.destination, current.fitPoints);
+          if (current.fitPoints.length > 1) current.fitRoute();
+          resizeObserver = new ResizeObserver(() => nativeMap.resize());
+          if (containerRef.current) resizeObserver.observe(containerRef.current);
+        };
+        errorHandler = () => { if (!disposed && !readyRef.current) { setMapLoading(false); setMapError("TomTom map could not be loaded. Route details remain available."); } };
+        map.mapLibreMap.on("load", loadedHandler);
+        map.mapLibreMap.on("error", errorHandler);
+      } catch {
+        if (!disposed) { setMapLoading(false); setMapError("Interactive map could not be initialized. Route details remain available."); }
+      }
+    })();
     return () => {
-      active = false;
-      if (createdUrl) URL.revokeObjectURL(createdUrl);
+      disposed = true;
+      readyRef.current = false;
+      resizeObserver?.disconnect();
+      if (map && loadedHandler) map.mapLibreMap.off("load", loadedHandler);
+      if (map && errorHandler) map.mapLibreMap.off("error", errorHandler);
+      map?.mapLibreMap.remove();
+      mapRef.current = null;
     };
-  }, [getToken, map]);
+  // Map initialization belongs to this mount/retry. Route and marker changes are applied by the update effect below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapAttempt]);
 
-  if (!map) return null;
-  const mapKey = JSON.stringify(map.bounds);
-  const imageUrl = image?.key === mapKey ? image.url : null;
-  const mapUnavailable = unavailableKey === mapKey;
-  const toPoint = (point: { latitude: number; longitude: number }) => {
-    const x = point.longitude * Math.PI / 180;
-    const y = mercatorY(point.latitude);
-    return `${((x - map.minX) / (map.maxX - map.minX)) * IMAGE_WIDTH},${((map.maxY - y) / (map.maxY - map.minY)) * IMAGE_HEIGHT}`;
-  };
-  const validRoutes = visibleRoutes.map((route) => ({ route, index: routes.indexOf(route), points: route.geometry ?? [] })).filter(({ points }) => points.length > 1);
-  const drawOrder = [...validRoutes].sort(({ route: left }, { route: right }) => Number(left.route_id === activeRouteId) - Number(right.route_id === activeRouteId));
-  const firstRoutePoints = selectedRoute?.geometry ?? validRoutes[0]?.points ?? [];
-  const startPoint = origin ? { latitude: origin.latitude, longitude: origin.longitude } : firstRoutePoints[0];
-  const endPoint = destination ? { latitude: destination.latitude, longitude: destination.longitude } : firstRoutePoints.at(-1);
-  const start = startPoint ? toPoint(startPoint).split(",") : null;
-  const end = endPoint ? toPoint(endPoint).split(",") : null;
+  useEffect(() => {
+    const map = mapRef.current?.mapLibreMap;
+    if (!map || !readyRef.current) return;
+    setRouteLayers(map, visibleRoutes, activeRouteId);
+    setEndpointLayers(map, origin, destination, fitPoints);
+  }, [visibleRoutes, activeRouteId, origin, destination, fitPoints, mapCenter]);
+
+  useEffect(() => {
+    if (readyRef.current) fitRoute();
+  }, [activeRouteId, fitRoute]);
+
+  useEffect(() => {
+    if (!selectedRoute || selectedPoints.length < 2 || !landmarkKey) return;
+    let active = true;
+    void getToken().then((token) => scheduleApi.routeLandmarks(selectedPoints, token)).then((items) => { if (active) setLandmarkResult({ key: landmarkKey, items, failed: false }); }).catch(() => { if (active) setLandmarkResult({ key: landmarkKey, items: [], failed: true }); });
+    return () => { active = false; };
+  }, [getToken, landmarkKey, selectedPoints, selectedRoute]);
+
+  if (!routes.length && !origin && !destination) return null;
   const landmarks = landmarkResult?.key === landmarkKey ? landmarkResult.items : [];
-  const transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+  const overlayDiagnostics = developmentDiagnostics && selectedRoute ? routeLineDiagnostic(selectedRoute, true, (point) => `${point.longitude},${point.latitude}`) : null;
+  const selectedSamples = developmentDiagnostics && selectedRoute ? sampleRouteGeometry(selectedRoute.geometry ?? []) : [];
 
   return <figure className="mt-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)]" aria-label={mode === "view" ? "Map of the saved driving route" : "Map comparing driving routes"}>
-    <div className="relative aspect-[16/7] w-full overflow-hidden">
-      <div className="absolute inset-0 touch-none cursor-grab active:cursor-grabbing" style={{ transform, transformOrigin: "center", transition: isDragging ? "none" : "transform 120ms ease-out" }} onPointerDown={(event) => { if (zoom === 1) return; drag.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y }; setIsDragging(true); event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (drag.current) setPan({ x: drag.current.panX + event.clientX - drag.current.x, y: drag.current.panY + event.clientY - drag.current.y }); }} onPointerUp={() => { drag.current = null; setIsDragging(false); }} onPointerCancel={() => { drag.current = null; setIsDragging(false); }}>
-      {imageUrl && <Image unoptimized fill sizes="(max-width: 768px) 100vw, 960px" src={imageUrl} alt="TomTom road map with labeled roads and nearby places" className="object-fill"/>}
-      {!imageUrl && <div className="absolute inset-0 grid place-items-center px-4 text-center text-sm text-[var(--text-secondary)]">{mapUnavailable ? "Detailed map unavailable; route comparisons remain available below." : "Loading detailed road map…"}</div>}
-      {imageUrl && <svg viewBox={`0 0 ${IMAGE_WIDTH} ${IMAGE_HEIGHT}`} role="img" aria-label={mode === "view" ? "Saved selected driving route" : "Colored route lines show where the driving options differ"} className="absolute inset-0 h-full w-full">
-        {drawOrder.map(({ route, index, points }) => {
-          const selected = activeRouteId === route.route_id;
-          const line = points.map(toPoint).join(" ");
-          return <g key={route.route_id} opacity={selected ? 1 : 0.3}>
-            <polyline points={line} fill="none" stroke="white" strokeWidth={selected ? 14 : 8} strokeLinecap="round" strokeLinejoin="round"/>
-            <polyline points={line} fill="none" stroke={ROUTE_COLORS[index % ROUTE_COLORS.length]} strokeWidth={selected ? 8 : 3} strokeLinecap="round" strokeLinejoin="round"/>
-          </g>;
-        })}
-        {start && end && <><circle cx={start[0]} cy={start[1]} r="13" fill="white" stroke="#047857" strokeWidth="3"/><text x={start[0]} y={Number(start[1]) + 4} textAnchor="middle" fontSize="11" fontWeight="bold" fill="#047857">A</text><circle cx={end[0]} cy={end[1]} r="13" fill="white" stroke="#D97706" strokeWidth="3"/><text x={end[0]} y={Number(end[1]) + 4} textAnchor="middle" fontSize="11" fontWeight="bold" fill="#92400E">B</text></>}
-        {landmarks.map((landmark, index) => { const [x, y] = toPoint(landmark).split(","); const color = landmark.category === "hospital" ? "#B91C1C" : "#7C3AED"; return <g key={`${landmark.category}-${landmark.name}-${index}`}><title>{`${landmark.category === "hospital" ? "Hospital" : "School"}: ${landmark.name}`}</title><circle cx={x} cy={y} r="9" fill="white" stroke={color} strokeWidth="3"/><text x={x} y={Number(y) + 4} textAnchor="middle" fontSize="11" fontWeight="bold" fill={color}>{landmark.category === "hospital" ? "+" : "S"}</text></g>; })}
-      </svg>}
-      </div>
-      <div className="absolute left-2 top-2 z-10 flex gap-1 rounded-lg bg-[var(--surface)]/95 p-1 shadow" aria-label="Map zoom controls"><button type="button" className="min-h-9 min-w-9 rounded-md text-lg font-semibold text-[var(--text-primary)] hover:bg-[var(--surface-hover)] disabled:opacity-50" aria-label="Zoom in map" disabled={zoom >= 4} onClick={() => setZoom((value) => Math.min(4, value + 0.5))}>+</button><button type="button" className="min-h-9 min-w-9 rounded-md text-lg font-semibold text-[var(--text-primary)] hover:bg-[var(--surface-hover)] disabled:opacity-50" aria-label="Zoom out map" disabled={zoom <= 1} onClick={() => setZoom((value) => Math.max(1, value - 0.5))}>−</button><button type="button" className="min-h-9 rounded-md px-2 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--surface-hover)]" aria-label="Reset map zoom and position" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>Reset</button></div>
-      <span className="absolute bottom-2 left-2 rounded-md bg-[var(--surface)]/95 px-2 py-1 text-xs font-medium text-[var(--text-primary)] shadow">A · {origin?.name ?? "Origin"}</span>
-      <span className="absolute bottom-2 right-2 rounded-md bg-[var(--surface)]/95 px-2 py-1 text-xs font-medium text-[var(--text-primary)] shadow">B · {destination?.name ?? "Destination"}</span>
+    <div className="relative h-[min(62vh,30rem)] min-h-72 w-full sm:min-h-80">
+      <div ref={containerRef} className="absolute inset-0" role="application" aria-label="Interactive route map. Drag to pan; use the mouse wheel or controls to zoom." />
+      {mapLoading && <div className="absolute inset-0 z-10 grid place-items-center bg-[var(--surface)]/80 text-sm" role="status">Loading interactive map…</div>}
+      {mapError && !mapLoading && <div className="absolute inset-x-2 top-2 z-10 flex items-start justify-between gap-2 rounded-md bg-[var(--state-error-bg)] p-2 text-xs text-[var(--state-error)]" role="alert"><span>{mapError}</span>{browserMapApiKey && <button type="button" className="font-semibold underline" onClick={() => { setMapLoading(true); setMapError(null); setMapAttempt((value) => value + 1); }}>Retry map</button>}</div>}
+      <div className="absolute left-2 top-2 z-10 flex flex-wrap gap-1 rounded-lg bg-[var(--surface)]/95 p-1 shadow" aria-label="Map controls"><button type="button" className={control} aria-label="Zoom in map" onClick={() => { const map = mapRef.current?.mapLibreMap; if (map) map.zoomIn({ duration: 150 }); }}>+</button><button type="button" className={control} aria-label="Zoom out map" onClick={() => { const map = mapRef.current?.mapLibreMap; if (map) map.zoomOut({ duration: 150 }); }}>−</button><button type="button" className={control} onClick={fitRoute}>Fit route</button></div>
+      <div className="absolute bottom-2 left-2 z-10 flex gap-2 rounded-md bg-[var(--surface)]/95 px-2 py-1 text-xs font-medium text-[var(--text-primary)] shadow"><span>A · {origin?.name ?? "Origin"}</span><span aria-hidden="true">→</span><span>B · {destination?.name ?? "Destination"}</span></div>
     </div>
     <figcaption className="flex flex-wrap gap-x-4 gap-y-2 border-t border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
       {visibleRoutes.map((route) => { const index = routes.indexOf(route); return <span key={route.route_id} className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ROUTE_COLORS[index % ROUTE_COLORS.length] }}/>{mode === "view" ? "Saved selected route" : `Route ${index + 1}${activeRouteId === route.route_id ? " · Selected" : ""}`}</span>; })}
@@ -149,5 +167,6 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
       {landmarks.length > 0 && <span className="basis-full text-[var(--text-primary)]">Near selected route: {landmarks.slice(0, 8).map((landmark) => landmark.name).join(" · ")}{landmarks.length > 8 ? ` · +${landmarks.length - 8} more` : ""}</span>}
       <span className="basis-full text-[var(--text-muted)]">Map © TomTom · Nearby labels depend on map coverage.</span>
     </figcaption>
+    {overlayDiagnostics && <details className="border-t border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]"><summary className="cursor-pointer font-medium">Development route geometry diagnostics</summary><p className="mt-2">Home/request origin: {origin?.latitude}, {origin?.longitude}. Raw route start: {selectedRoute.geometry?.[0]?.latitude}, {selectedRoute.geometry?.[0]?.longitude}. Displayed marker uses the request origin.</p><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify({ route: overlayDiagnostics, evenly_spaced_samples: selectedSamples.map(({ index, point }) => ({ index, latitude: (point as Coordinate).latitude, longitude: (point as Coordinate).longitude })) }, null, 2)}</pre></details>}
   </figure>;
 }
