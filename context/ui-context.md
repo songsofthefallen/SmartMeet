@@ -47,6 +47,8 @@ Use Lucide React (`lucide-react`) with consistent stroke weight. Icon-only contr
 
 ## Layout patterns
 
+- **Public landing page:** spacious centered header, editorial two-column hero and account composition on desktop, compact feature highlights, and a decorative route illustration labeled as illustrative. Keep Clerk's real sign-in and sign-up forms in the account panel and stack content at narrow widths.
+
 - **Shared signed-in shell:** persistent desktop navigation rail; compact horizontal navigation on mobile; consistent account access and clear current-page indication.
 - **Dashboard:** daily overview led by the next known event and supported planning information.
 - **Schedules:** chronological event management with a separate focused schedule creation workspace.

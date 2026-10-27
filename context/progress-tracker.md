@@ -1,5 +1,14 @@
 ## Current Progress
 
+### SmartMeet public landing and Clerk authentication panel
+
+- Replaced the minimal root card with a responsive dark landing page using existing semantic tokens. Added the hero and account panel, Lucide feature highlights, and an inline decorative SVG route illustration explicitly labeled as illustrative with no live route data.
+- Root retains the server-side Clerk session check and redirects signed-in users to /dashboard. The panel uses Clerk <SignIn /> and <SignUp /> components with hash routing and branded appearance; segmented links select auth mode by query. Both flows fall back to /dashboard. Existing standalone auth routes and authenticated layout are unchanged. No route, weather, or schedule API calls were added.
+- Added a frontend regression check for Clerk components, mode links, the signed-in redirect, standalone auth routes, and absence of custom credential forms.
+- Automated verification: frontend suite, TypeScript, ESLint, production build, and git diff --check passed. Existing Node type-module notices remain during TypeScript-strip tests.
+- Browser verification is still pending. The existing VS Code preview is signed in on /schedules; Computer Use displayed an approval prompt before it can inspect that window. No visual landing-page check has been performed yet.
+- No reference image asset was attached; implementation follows the written composition. Clerk renders only methods enabled in the configured Clerk instance.
+
 ### SmartMeet UI Redesign Phase 4 - Saved Places and Settings
 
 - `/saved-places` now mounts the existing authenticated Saved Places manager. It preserves Home/School/Work/Gym and custom aliases, saved-place CRUD, optional addresses and coordinates, GPS selection, map-pin selection, panning/zoom, reverse geocoding, and existing snapshots in schedules. The duplicate management panel was removed from Schedules; schedule creation still uses the existing saved-place hook. The four shared navigation destinations and Clerk-protected route-group layout are unchanged.
