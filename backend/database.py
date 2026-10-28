@@ -35,10 +35,27 @@ def _database_url() -> str:
     return value
 
 
+
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
     """Return the process-wide engine, creating its pool on first use."""
-    return create_engine(_database_url(), pool_pre_ping=True)
+    url = make_url(_database_url())
+
+    # Remove the unsupported URL option before passing the URL to PyMySQL.
+    query = dict(url.query)
+    ssl_mode = query.pop("ssl-mode", None)
+    url = url.set(query=query)
+
+    connect_args = {}
+    if ssl_mode and ssl_mode.upper() == "REQUIRED":
+        connect_args["ssl"] = {"check_hostname": True}
+
+    return create_engine(
+        url,
+        pool_pre_ping=True,
+        connect_args=connect_args,
+    )
+
 
 
 @lru_cache(maxsize=1)
