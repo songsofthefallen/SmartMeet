@@ -13,7 +13,7 @@ from observability import new_request_id, reset_request_id, set_request_id
 
 
 def configured_origins() -> list[str]:
-    value = os.getenv("FRONTEND_ORIGINS", "http://localhost:3000")
+    value = os.getenv("FRONTEND_ORIGINS", "http://localhost:3000", "https://smartmeet-api-xzfx.onrender.com")
     return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 
