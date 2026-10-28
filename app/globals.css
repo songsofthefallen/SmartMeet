@@ -110,33 +110,19 @@ body {
     linear-gradient(180deg, var(--background) 0%, transparent 18%, transparent 78%, color-mix(in srgb, var(--background) 78%, transparent) 100%);
 }
 
-.landing-clerk .cl-rootBox {
+.landing-clerk {
   width: 100%;
-  max-width: none;
+  max-width: 100%;
+  min-width: 0;
 }
 
-.landing-clerk .cl-cardBox {
-  width: 100% !important;
-  max-width: none !important;
-  padding: 0 !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
+.landing-clerk :where(*) {
+  box-sizing: border-box;
+  min-width: 0;
 }
 
-.landing-clerk .cl-card {
-  width: 100% !important;
-  max-width: none !important;
-  padding: 0 !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-.landing-clerk .cl-footer {
-  display: none !important;
+.landing-clerk :where(input, button) {
+  max-width: 100%;
 }
 
 @media (max-width: 1023px) {

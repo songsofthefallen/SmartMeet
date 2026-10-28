@@ -902,3 +902,25 @@ For each feature-spec change, keep this tracker synchronized with the spec's act
 - TomTom SDK's built-in MapLibre attribution control remains enabled by the shared initializer; the SDK's `MapLibreOptions` excludes an app override for `attributionControl`. Only the custom footer note was removed.
 - Updated the UTF-8 UI regression test to assert the nearby-place labels/results and custom footer are absent. Route geometry, alternatives, endpoint marker, and map controls remain.
 - Verification: frontend tests, `npx tsc --noEmit`, ESLint, production build, and `git diff --check` passed. No backend files or route calculations changed.
+
+### SmartMeet landing Clerk control styling
+
+- Kept the landing page card and Clerk sign-in/sign-up behavior intact. The clipping and gray input were inside Clerk-generated controls: the OAuth/button and form descendants had no consistent border-box width constraints, and the Clerk field background did not use the SmartMeet surface token in the rendered form.
+- Constrained Clerk wrappers, OAuth controls, and form controls to the available width; kept the supported `lastAuthenticationStrategyBadge` in normal flex flow so it remains visible; styled inputs with the existing background, text, border, placeholder, hover, and focus tokens.
+- Added focused landing-page regression assertions for Clerk sizing, badge handling, and themed inputs.
+- Verification: frontend test suite, `npx tsc --noEmit`, ESLint, production build, and `git diff --check` passed. Inspected the VS Code localhost preview at desktop and narrow widths. The Google button and fields fit; the sign-up email/password controls also fit. The “Last used” badge was not shown by this session, so its live appearance could not be visually confirmed; the Clerk-supported appearance element and no-clipping layout rule are in place.
+
+### Clerk UI component version pin
+
+- Installed `@clerk/ui@1.38.0` and passed its `ui` export into the root `ClerkProvider`, as Clerk's component-versioning guide documents. Kept the installed SDK at `@clerk/nextjs@7.9.13` / `@clerk/react@6.17.7`; an npm override keeps `@clerk/shared@4.39.1`, which the existing SDK imports and which works with this UI release.
+- A trial of `@clerk/ui@1.42.0` resolved `@clerk/shared@4.42.0` but failed in the development runtime because the existing Clerk React bundle imports `@clerk/shared/error`, absent from that shared release. Reverting to the compatible UI/shared versions restored the actual Clerk forms in the VS Code localhost preview.
+- Removed selectors against Clerk's internal `.cl-*` DOM classes from global CSS. Layout, field colors, OAuth button sizing, and the Last used badge placement remain in supported Clerk `appearance.elements` configuration. `lib/landing-page.test.js` checks the provider pin and guards against structural selectors.
+- Verification on the final dependency tree: frontend suite, TypeScript, ESLint, production build, and `git diff --check` passed. The VS Code preview rendered the real sign-in screen and the create-account email/password screen. No `structural_css_pin_clerk_ui` warning appeared in the refreshed development terminal, and no internal Clerk selectors remain under `app/`.
+
+### SmartMeet landing Clerk footer and badge refinement
+
+- Tightened the app-owned auth wrapper and card to border-box, full-width, shrinkable sizing; scoped the same sizing rules to Clerk descendants without hiding overflow. Kept the Google and email controls at full available width.
+- Hid Clerk's Last used badge through the supported `lastAuthenticationStrategyBadge` appearance element. Set the supported auth component elevation to `flush`, which removes Clerk's separate footer background. Suppressed the visual development-mode UI warning only when `NODE_ENV` is `development`; this does not change the development instance or keys.
+- Clerk's Secured by Clerk branding is not a code-level appearance option. The official control is Clerk Dashboard → application Settings → Branding → enable Remove "Secured by Clerk" branding; Clerk documents this as free to use in development and requiring a paid plan in production. This dashboard setting was not changed.
+- Added landing regression assertions for badge hiding, flush elevation, development-only warning suppression, and responsive wrapper sizing. Verification: frontend tests, TypeScript, ESLint, production build, and `git diff --check` passed.
+- Live visual check limitation: the open VS Code localhost tab is authenticated and the landing route redirects it to `/dashboard`, so I could not inspect the updated anonymous sign-in card or its mobile rendering in that tab. No browser result is claimed for this pass.

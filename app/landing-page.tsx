@@ -16,6 +16,10 @@ import { Suspense } from "react";
 type AuthMode = "sign-in" | "sign-up";
 
 const clerkAppearance = {
+  options: {
+    elevation: "flush" as const,
+    unsafe_disableDevelopmentModeWarnings: process.env.NODE_ENV === "development",
+  },
   variables: {
     colorBackground: "transparent",
     colorText: "var(--text-primary)",
@@ -28,18 +32,21 @@ const clerkAppearance = {
     fontFamily: "Arial, Helvetica, sans-serif",
   },
   elements: {
-    rootBox: "w-full !max-w-none",
-    cardBox: "w-full !max-w-none !border-0 !bg-transparent !p-0 !shadow-none !rounded-none",
-    card: "w-full !max-w-none !border-0 !bg-transparent !p-0 !shadow-none !rounded-none",
+    rootBox: "!w-full !min-w-0 !max-w-full !box-border !overflow-visible",
+    cardBox: "!w-full !min-w-0 !max-w-full !box-border !overflow-visible !border-0 !bg-transparent !p-0 !shadow-none !rounded-none",
+    card: "!w-full !min-w-0 !max-w-full !box-border !overflow-visible !border-0 !bg-transparent !p-0 !shadow-none !rounded-none",
     headerTitle: "text-text-primary",
     headerSubtitle: "text-text-secondary",
     formFieldLabel: "text-text-secondary",
-    formFieldInput: "border-border focus:border-brand-primary",
-    formButtonPrimary: "bg-brand-primary text-background hover:bg-brand-hover",
+    formFieldInput: "!w-full !min-w-0 !max-w-full !box-border !bg-background !text-text-primary placeholder:!text-text-muted !border-border hover:!border-brand-hover focus:!border-brand-primary focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-brand-primary/40",
+    formButtonPrimary: "!w-full !min-w-0 !max-w-full !box-border bg-brand-primary text-background hover:bg-brand-hover",
     footer: "hidden",
     dividerLine: "bg-border",
     dividerText: "text-text-muted",
-    socialButtonsBlockButton: "border-border text-text-secondary hover:bg-surface-hover",
+    socialButtons: "!w-full !min-w-0 !max-w-full !box-border",
+    socialButtonsBlockButton: "!relative !flex !w-full !min-w-0 !max-w-full !box-border !items-center !justify-center !gap-2 !overflow-visible border-border text-text-secondary hover:bg-surface-hover",
+    socialButtonsBlockButtonText: "!min-w-0 !whitespace-normal",
+    lastAuthenticationStrategyBadge: "hidden",
     formFieldAction: "text-brand-primary hover:text-brand-hover",
     identityPreviewText: "text-text-primary",
   },
@@ -101,8 +108,8 @@ export default function LandingPage({ initialMode }: { initialMode: AuthMode }) 
             </ul>
           </section>
 
-          <aside aria-label="Account access" className="mx-auto w-full min-w-0 max-w-[520px] lg:mx-0 lg:justify-self-end">
-            <div className="w-full min-w-0 rounded-[22px] border border-border bg-surface p-5 sm:p-7">
+          <aside aria-label="Account access" className="mx-auto box-border w-full min-w-0 max-w-[520px] lg:mx-0 lg:justify-self-end">
+            <div className="box-border w-full min-w-0 rounded-[22px] border border-border bg-surface p-5 sm:p-7">
               <div className="mb-6">
                 <p className="text-sm text-text-secondary">Welcome to</p>
                 <h2 className="mt-1 text-[32px] font-semibold tracking-[-0.05em]">Smart<span className="text-brand-primary">Meet</span></h2>
@@ -114,7 +121,7 @@ export default function LandingPage({ initialMode }: { initialMode: AuthMode }) 
                 <Link aria-current={!signInSelected ? "page" : undefined} href="/?auth=sign-up" className={`rounded-lg px-3 py-2.5 text-center text-sm font-medium transition-colors ${!signInSelected ? "bg-surface-hover text-text-primary shadow-sm" : "text-text-muted hover:text-text-primary"}`}>Create account</Link>
               </nav>
 
-              <div className="landing-clerk w-full min-w-0">
+              <div className="landing-clerk box-border w-full min-w-0 max-w-full">
                 <Suspense fallback={<div className="py-10 text-center text-sm text-text-muted">Loading secure account options…</div>}>
                   {signInSelected ? (
                     <SignIn routing="hash" signInUrl="/?auth=sign-in" signUpUrl="/?auth=sign-up" fallbackRedirectUrl="/dashboard" appearance={clerkAppearance} />
