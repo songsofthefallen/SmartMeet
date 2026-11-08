@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from observability import log_provider_event
 from schemas import LocationSelection, RouteAlternative, TrafficCoordinate, TrafficSection, TravelEstimate
+from route_recommendation import build_route_recommendation
 
 logger = logging.getLogger(__name__)
 TOMTOM_REVERSE_GEOCODE_URL = "https://api.tomtom.com/search/2/reverseGeocode"
@@ -608,6 +609,7 @@ class TomTomRoutingService:
                 traffic_sections=primary.traffic_sections,
                 selected_route_id=primary.route_id,
                 alternatives=alternatives,
+                recommendation=build_route_recommendation(alternatives),
             )
         except RoutingProviderError:
             raise

@@ -410,6 +410,23 @@ class RouteAlternative(BaseModel):
     geometry: list["TrafficCoordinate"] = Field(default_factory=list, max_length=500)
 
 
+class RouteAlternativeExplanation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    route_id: Annotated[str, StringConstraints(min_length=1, max_length=20)]
+    reason_codes: list[Annotated[str, StringConstraints(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=6)
+    explanation: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    traffic_information_available: bool
+
+
+class RouteRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    recommended_route_id: Annotated[str, StringConstraints(min_length=1, max_length=20)] | None = None
+    reason_codes: list[Annotated[str, StringConstraints(min_length=1, max_length=50)]] = Field(default_factory=list, max_length=6)
+    explanation: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    traffic_information_available: bool
+    alternatives: list[RouteAlternativeExplanation] = Field(default_factory=list, max_length=6)
+
+
 class TravelEstimate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     duration_seconds: int = Field(ge=0)
@@ -426,6 +443,7 @@ class TravelEstimate(BaseModel):
     selected_route_id: Annotated[str, StringConstraints(min_length=1, max_length=20)] = "0"
     # TomTom's maxAlternatives is additional to the primary route: 1 + 5.
     alternatives: list[RouteAlternative] = Field(default_factory=list, max_length=6)
+    recommendation: RouteRecommendation | None = None
 
     @field_validator(
         "traffic_delay_seconds",

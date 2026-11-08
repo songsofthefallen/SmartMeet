@@ -1,5 +1,13 @@
 ## Current Progress
 
+### Explainable TomTom route recommendation
+
+- Added backend recommendation analysis to existing TomTom route estimates. It selects the shortest traffic-adjusted duration among valid routes, keeps provider order for ties, returns reason codes and alternative comparisons, and does not change the selected route or routing request.
+- The schedule UI marks the recommended route while retaining the existing route radio selection. It shows the estimated duration and distance, slower/shorter trade-offs, TomTom-reported delay and free-flow duration when both exist, and an explicit unavailable state otherwise.
+- TomTom data currently used includes traffic-adjusted `travelTimeInSeconds`, `lengthInMeters`, and optional `trafficDelayInSeconds`, `noTrafficTravelTimeInSeconds`, `historicTrafficTravelTimeInSeconds`, and `liveTrafficIncidentsTravelTimeInSeconds`. Provider delay remains authoritative; it is not recomputed from duration fields because the provider metrics can differ.
+- Added tests for fastest route, slower and shorter-but-slower alternatives, traffic availability, invalid/no valid options, and tie ordering. Existing route-selection persistence tests remain in place.
+- Verification passed: backend suite (**389 passed**), frontend suite, `npx tsc --noEmit`, ESLint, production build, and `git diff --check`. Pytest emitted a Windows `.pytest_cache` `WinError 183` warning after all tests passed.
+
 ### Uncertainty-aware natural-language schedule clarification
 
 - Added deterministic structured clarification data (`field`, `reason`, `question`, `answer_type`, and quick-choice options) with one blocking field chosen per turn. The AI remains limited to candidate extraction; backend schema, timezone, and validation rules decide readiness.

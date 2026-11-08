@@ -38,6 +38,7 @@ export type TrafficSectionEstimate = {
   end_coordinates: { latitude: number; longitude: number } | null;
 };
 export type RouteAlternativeEstimate = { route_id: string; duration_seconds: number; duration_minutes: number; distance_meters: number | null; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: TrafficSectionEstimate[]; road_names: string[]; geometry?: { latitude: number; longitude: number }[] };
+export type RouteRecommendationEstimate = { recommended_route_id: string | null; reason_codes: string[]; explanation: string; traffic_information_available: boolean; alternatives: { route_id: string; reason_codes: string[]; explanation: string; traffic_information_available: boolean }[] };
 
 export type Schedule = {
   id: number;
@@ -46,7 +47,7 @@ export type Schedule = {
   description: string | null;
   location: LocationSelection | null;
   origin_location: LocationSelection | null;
-  travel_estimate: { duration_seconds: number; duration_minutes: number; provider: string; retrieved_at: string; traffic_included: boolean; route_time_basis: "current" | "scheduled_departure" | "scheduled_arrival"; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: TrafficSectionEstimate[]; selected_route_id?: string; alternatives?: RouteAlternativeEstimate[] } | null;
+  travel_estimate: { duration_seconds: number; duration_minutes: number; provider: string; retrieved_at: string; traffic_included: boolean; route_time_basis: "current" | "scheduled_departure" | "scheduled_arrival"; traffic_delay_seconds: number | null; no_traffic_travel_time_seconds: number | null; historic_traffic_travel_time_seconds: number | null; live_traffic_incidents_travel_time_seconds: number | null; traffic_sections: TrafficSectionEstimate[]; selected_route_id?: string; alternatives?: RouteAlternativeEstimate[]; recommendation?: RouteRecommendationEstimate | null } | null;
   weather_estimate: { status: "available" | "unavailable"; summary: string; retrieved_at: string | null; forecast_at: string | null; origin_forecast_at?: string | null; destination_forecast_at?: string | null; origin_weather?: WeatherPointForecast | null; destination_weather?: WeatherPointForecast | null; conditions: string[]; advisories: WeatherAdvisory[]; origin_status?: "available" | "unavailable" | null; destination_status?: "available" | "unavailable" | null; origin_message?: string | null; destination_message?: string | null } | null;
   route_availability?: "no_drivable_route" | null;
   traffic_delay_minutes: number | null;
@@ -358,9 +359,9 @@ function isScheduleList(value: unknown): value is Schedule[] {
   return Array.isArray(value) && value.every(isSchedule);
 }
 
-function isRouteOptions(value: unknown): value is { alternatives: RouteAlternativeEstimate[] } {
+function isRouteOptions(value: unknown): value is { alternatives: RouteAlternativeEstimate[]; recommendation: RouteRecommendationEstimate | null } {
   if (!isRecord(value) || !Array.isArray(value.alternatives) || value.alternatives.length === 0) return false;
-  return value.alternatives.every((option) => isRecord(option) &&
+  const alternativesValid = value.alternatives.every((option) => isRecord(option) &&
     typeof option.route_id === "string" &&
     typeof option.duration_seconds === "number" && Number.isFinite(option.duration_seconds) && option.duration_seconds > 0 &&
     typeof option.duration_minutes === "number" && Number.isFinite(option.duration_minutes) && option.duration_minutes > 0 &&
@@ -369,6 +370,12 @@ function isRouteOptions(value: unknown): value is { alternatives: RouteAlternati
     Array.isArray(option.traffic_sections) && option.traffic_sections.every(isTrafficSectionEstimate) &&
     Array.isArray(option.road_names) &&
     (option.geometry === undefined || (Array.isArray(option.geometry) && option.geometry.every((point) => isRecord(point) && typeof point.latitude === "number" && typeof point.longitude === "number"))));
+  const recommendation = value.recommendation;
+  return alternativesValid && isRecord(recommendation) &&
+    (recommendation.recommended_route_id === null || typeof recommendation.recommended_route_id === "string") &&
+    typeof recommendation.explanation === "string" && Array.isArray(recommendation.reason_codes) &&
+    typeof recommendation.traffic_information_available === "boolean" && Array.isArray(recommendation.alternatives) &&
+    recommendation.alternatives.every((item) => isRecord(item) && typeof item.route_id === "string" && typeof item.explanation === "string" && Array.isArray(item.reason_codes) && typeof item.traffic_information_available === "boolean");
 }
 
 export const scheduleApi = {
@@ -418,7 +425,7 @@ export const scheduleApi = {
     return request<{ accepted: true }>("/push/test", token, "POST", scheduleId ? { schedule_id: scheduleId } : {}, (value): value is { accepted: true } => isRecord(value) && value.accepted === true, options);
   },
   async routeOptions(input: Pick<ScheduleInput, "origin_location" | "location" | "time_intent" | "target_datetime">, token: string | null, options?: ScheduleRequestOptions) {
-    return request<{ alternatives: RouteAlternativeEstimate[] }>("/schedules/route-options", token, "POST", input, isRouteOptions, options);
+    return request<{ alternatives: RouteAlternativeEstimate[]; recommendation: RouteRecommendationEstimate | null }>("/schedules/route-options", token, "POST", input, isRouteOptions, options);
   },
   searchLocations(query: string, token: string | null, options?: ScheduleRequestOptions) {
     return request<{ results: LocationSelection[] }>("/locations/search", token, "POST", { query }, isLocationSearch, options);
