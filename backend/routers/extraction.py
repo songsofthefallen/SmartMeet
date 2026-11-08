@@ -8,16 +8,21 @@ from typing import Annotated
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from ai_provider import AIConfigurationError, OpenRouterClient
 from extraction_schemas import ScheduleExtractionRequest, ScheduleExtractionReview
 from extraction_service import ScheduleExtractionError, ScheduleExtractionService
+from database import get_db
+from models import SavedPlace
 from main import verify_clerk_token
 
 
 router = APIRouter(prefix="/schedules", tags=["schedule extraction"])
 logger = logging.getLogger(__name__)
 CurrentUser = Annotated[str, Depends(verify_clerk_token)]
+DbSession = Annotated[Session, Depends(get_db)]
 
 
 def get_extraction_service() -> Generator[ScheduleExtractionService, None, None]:
@@ -58,14 +63,20 @@ def get_extraction_service() -> Generator[ScheduleExtractionService, None, None]
 @router.post("/extract", response_model=ScheduleExtractionReview)
 def extract_schedule(
     payload: ScheduleExtractionRequest,
-    _user_id: CurrentUser,
+    user_id: CurrentUser,
+    db: DbSession,
     service: Annotated[ScheduleExtractionService, Depends(get_extraction_service)],
 ) -> ScheduleExtractionReview:
     try:
+        saved_places = list(db.scalars(
+            select(SavedPlace).where(SavedPlace.clerk_user_id == user_id)
+            .order_by(SavedPlace.alias, SavedPlace.id)
+        ))
         return service.extract(
             payload.text,
             reference_datetime=datetime.now(timezone.utc),
             user_timezone=payload.timezone,
+            saved_places=saved_places,
         )
     except ScheduleExtractionError as exc:
         raise HTTPException(

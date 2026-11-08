@@ -1,5 +1,12 @@
 ## Current Progress
 
+### SmartMeet Saved Places aware schedule extraction
+
+- Authenticated `/schedules/extract` now loads Saved Places using the verified Clerk subject and passes alias/name candidates into the existing extraction service as context. The service attaches an authoritative saved-place ID only when the extracted location phrase exactly matches one unique normalized alias or display name (case and whitespace insensitive). Multiple matches produce a clarification and no ID.
+- The schedule workspace resolves returned IDs against its already loaded Saved Places, populates the existing `LocationSelection` snapshot, and skips TomTom search for matched places. Unmatched descriptions continue through the existing TomTom place search; missing origins remain unchanged.
+- Added service coverage for origin, destination, both locations, external destination + saved origin, case/whitespace, ambiguity, unknown external place, no explicit origin, and existing no-context behavior. Added endpoint ownership coverage proving another user's place is not passed to extraction.
+- Verification passed: full backend suite (**375 passed**), frontend suite, `npx tsc --noEmit`, ESLint, production build, and `git diff --check`. Pytest emitted a cache-directory warning (`WinError 183`) while writing its cache; all tests completed successfully.
+
 ### SmartMeet production route map initialization
 
 - Compared the route preview and Saved Places picker. Both use `createSmartMeetMap` from `lib/tomtom-map.ts` and the same `NEXT_PUBLIC_TOMTOM_MAPS_API_KEY`; the route preview receives validated route geometry and initializes only when its component mounts.

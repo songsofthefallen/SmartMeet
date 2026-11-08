@@ -2,6 +2,7 @@
 
 import logging
 import re
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from functools import lru_cache
 from time import perf_counter
@@ -11,8 +12,10 @@ from ai_provider import AIInvalidOutputError, AIProviderError, OpenRouterClient
 from extraction_schemas import (
     ExtractionReviewStatus,
     ScheduleExtraction,
+    ScheduleExtractionCandidate,
     ScheduleExtractionReview,
 )
+from models import SavedPlace
 from timezone_utils import (
     AmbiguousLocalDateTime,
     InvalidLocalDateTime,
@@ -38,6 +41,7 @@ class ScheduleExtractionService:
         *,
         reference_datetime: datetime,
         user_timezone: str | None = None,
+        saved_places: Sequence[SavedPlace] = (),
     ) -> ScheduleExtractionReview:
         """Extract, resolve, and report readiness for user review."""
         text = user_text.strip() if isinstance(user_text, str) else ""
@@ -59,7 +63,9 @@ class ScheduleExtractionService:
         trusted_context = (
             f"Reference instant: {reference_datetime.isoformat()}\n"
             f"Reference local date/time: {reference_local}\n"
-            f"User timezone: {user_timezone or 'not provided'}"
+            f"User timezone: {user_timezone or 'not provided'}\n"
+            "Authenticated user's saved locations (context only; only use when stated):\n"
+            + ("\n".join(f"- Alias: {place.alias}; name: {place.display_name}" for place in saved_places) or "(none)")
         )
         messages = [
             {
@@ -75,7 +81,8 @@ class ScheduleExtractionService:
                     "missing (and vice versa). The local time must not include an offset. Resolve relative "
                     "dates only from the trusted reference context. "
                     "Extract origin_description and destination_description as separate concise place phrases "
-                    "only when stated by the user; do not resolve places or invent a place name. Use null when "
+                    "only when stated by the user; when a saved alias is stated, preserve that alias as the phrase. "
+                    "Do not resolve places or invent a place name. Use null when "
                     "a location is not stated or is too uncertain to identify. "
                     "Use the provided user timezone only when it is the intended timezone. "
                     "For an explicitly stated departure time tied to an origin, use that origin's local "
@@ -89,7 +96,7 @@ class ScheduleExtractionService:
         ]
         provider_started = perf_counter()
         try:
-            extracted = self._client.complete_structured(messages, ScheduleExtraction)
+            candidate = self._client.complete_structured(messages, ScheduleExtractionCandidate)
         except AIInvalidOutputError as exc:
             return ScheduleExtractionReview(
                 status=ExtractionReviewStatus.NEEDS_CLARIFICATION,
@@ -107,7 +114,14 @@ class ScheduleExtractionService:
             )
             raise ScheduleExtractionError("Schedule extraction is temporarily unavailable") from exc
 
+        extracted = ScheduleExtraction.model_validate(candidate.model_dump())
         extracted, model_time_offset = _separate_model_time_offset(extracted)
+
+        extracted, saved_place_ambiguities = _attach_saved_place_ids(extracted, saved_places)
+        if saved_place_ambiguities:
+            extracted = extracted.model_copy(update={
+                "ambiguities": [*extracted.ambiguities, *saved_place_ambiguities][:10]
+            })
 
         if not extracted.is_schedule_request:
             return ScheduleExtractionReview(
@@ -176,6 +190,35 @@ class ScheduleExtractionService:
             extraction=extracted,
             resolved_target_datetime=resolved,
         )
+
+
+def _normalize_place_reference(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+
+
+def _attach_saved_place_ids(
+    extraction: ScheduleExtraction, saved_places: Sequence[SavedPlace]
+) -> tuple[ScheduleExtraction, list[str]]:
+    """Attach only uniquely matched, user-owned place references to extracted fields."""
+    updates: dict[str, int | None] = {}
+    ambiguities: list[str] = []
+    for field, label in (("origin_description", "origin"), ("destination_description", "destination")):
+        reference = getattr(extraction, field)
+        if not reference:
+            continue
+        normalized = _normalize_place_reference(reference)
+        matches = [
+            place for place in saved_places
+            if normalized and normalized in {
+                _normalize_place_reference(place.alias),
+                _normalize_place_reference(place.display_name),
+            }
+        ]
+        if len(matches) == 1:
+            updates[f"{label}_saved_place_id"] = matches[0].id
+        elif len(matches) > 1:
+            ambiguities.append(f"The {label} matches more than one saved place. Choose the intended saved place.")
+    return extraction.model_copy(update=updates), ambiguities
 
 
 def _separate_model_time_offset(

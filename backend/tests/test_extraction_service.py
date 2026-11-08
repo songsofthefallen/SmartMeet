@@ -6,9 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from ai_provider import AIProviderError, AISettings, OpenRouterClient
-from extraction_schemas import ExtractionReviewStatus, ScheduleExtraction
+from extraction_schemas import ExtractionReviewStatus, ScheduleExtraction, ScheduleExtractionCandidate
 from extraction_service import ScheduleExtractionError, ScheduleExtractionService
-from models import TimeIntent
+from models import SavedPlace, TimeIntent
 
 
 def candidate(**overrides: object) -> dict[str, object]:
@@ -29,19 +29,19 @@ def candidate(**overrides: object) -> dict[str, object]:
     return values
 
 
-def parsed_candidate(**overrides: object) -> ScheduleExtraction:
-    return ScheduleExtraction.model_validate_json(json.dumps(candidate(**overrides)))
+def parsed_candidate(**overrides: object) -> ScheduleExtractionCandidate:
+    return ScheduleExtractionCandidate.model_validate_json(json.dumps(candidate(**overrides)))
 
 
 class MockExtractionClient:
-    def __init__(self, result: ScheduleExtraction | Exception) -> None:
+    def __init__(self, result: ScheduleExtractionCandidate | Exception) -> None:
         self.result = result
         self.response_model: type | None = None
         self.messages: list[dict[str, str]] | None = None
 
     def complete_structured(
         self, messages: list[dict[str, str]], response_model: type
-    ) -> ScheduleExtraction:
+    ) -> ScheduleExtractionCandidate:
         self.messages = messages
         self.response_model = response_model
         if isinstance(self.result, Exception):
@@ -65,7 +65,8 @@ def test_extraction_returns_valid_arrival_candidates_and_preserves_unknown_durat
     assert result.extraction.travel_duration_minutes is None
     assert result.missing_fields == []
     assert result.resolved_target_datetime.isoformat() == "2026-10-11T23:00:00+00:00"
-    assert client.response_model is ScheduleExtraction
+    assert client.response_model is ScheduleExtractionCandidate
+    assert "origin_saved_place_id" not in ScheduleExtractionCandidate.model_json_schema()["properties"]
     assert "Reference instant: 2026-10-11T20:00:00+08:00" in client.messages[1]["content"]
     assert "origin_description and destination_description" in client.messages[0]["content"]
 
@@ -88,6 +89,64 @@ def test_extraction_preserves_distinct_origin_and_destination_descriptions() -> 
     assert result.extraction is not None
     assert result.extraction.origin_description == "Santa Maria, Bulacan"
     assert result.extraction.destination_description == "University of Santo Tomas"
+
+
+def _saved_place(place_id: int, alias: str, display_name: str = "") -> SavedPlace:
+    return SavedPlace(id=place_id, clerk_user_id="user_alpha", alias=alias,
+        display_name=display_name or f"{alias} address", latitude=15.0, longitude=121.0,
+        locality=None, region=None, country=None, timezone="Asia/Manila", formatted_address=None,
+        location_source="map_pin")
+
+
+def test_saved_place_destination_and_origin_are_attached_without_searching() -> None:
+    places = [_saved_place(1, "Home"), _saved_place(2, "School")]
+    reference = datetime.fromisoformat("2026-10-11T20:00:00+08:00")
+    destination = ScheduleExtractionService(MockExtractionClient(parsed_candidate(
+        destination_description="school"))).extract("go to school", reference_datetime=reference, saved_places=places)
+    assert destination.extraction.destination_saved_place_id == 2
+    assert destination.extraction.origin_saved_place_id is None
+
+    origin = ScheduleExtractionService(MockExtractionClient(parsed_candidate(
+        origin_description="Home"))).extract("leave from home", reference_datetime=reference, saved_places=places)
+    assert origin.extraction.origin_saved_place_id == 1
+
+
+def test_both_saved_places_and_external_destination_are_resolved_independently() -> None:
+    places = [_saved_place(1, "Home"), _saved_place(2, "School")]
+    reference = datetime.fromisoformat("2026-10-11T20:00:00+08:00")
+    both = ScheduleExtractionService(MockExtractionClient(parsed_candidate(
+        origin_description="  sCHOOL ", destination_description="home"))).extract(
+            "go home from school", reference_datetime=reference, saved_places=places)
+    assert both.extraction.origin_saved_place_id == 2
+    assert both.extraction.destination_saved_place_id == 1
+
+    external = ScheduleExtractionService(MockExtractionClient(parsed_candidate(
+        origin_description="home", destination_description="SM Cabanatuan"))).extract(
+            "go to SM Cabanatuan from home", reference_datetime=reference, saved_places=places)
+    assert external.extraction.origin_saved_place_id == 1
+    assert external.extraction.destination_saved_place_id is None
+    assert external.extraction.destination_description == "SM Cabanatuan"
+
+
+def test_ambiguous_saved_place_match_is_not_selected_and_unknown_place_is_unchanged() -> None:
+    places = [_saved_place(1, "Home"), _saved_place(2, " home ")]
+    result = ScheduleExtractionService(MockExtractionClient(parsed_candidate(
+        origin_description="home", destination_description="SM Cabanatuan"))).extract(
+            "go to SM Cabanatuan from home", reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+            saved_places=places)
+    assert result.extraction.origin_saved_place_id is None
+    assert result.status is ExtractionReviewStatus.NEEDS_CLARIFICATION
+    assert any("more than one saved place" in item for item in result.extraction.ambiguities)
+    assert result.extraction.destination_saved_place_id is None
+
+
+def test_extraction_without_relevant_saved_places_keeps_existing_location_behavior() -> None:
+    client = MockExtractionClient(parsed_candidate(destination_description="SM Cabanatuan"))
+    result = ScheduleExtractionService(client).extract("go to SM Cabanatuan", reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"))
+    assert result.extraction.destination_description == "SM Cabanatuan"
+    assert result.extraction.destination_saved_place_id is None
+    assert result.extraction.origin_description is None
+    assert "Home address" not in client.messages[1]["content"]
 
 
 def test_extraction_schema_accepts_explicit_nonnegative_durations() -> None:

@@ -477,16 +477,18 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
       setTimezoneConflictConfirmed(!review.ambiguous_fields.includes("timezone"));
       const extracted = review.extraction;
       if (extracted) {
-        if (extracted.origin_description) {
+        const savedOrigin = savedPlaces.find((place) => place.id === extracted.origin_saved_place_id);
+        const savedDestination = savedPlaces.find((place) => place.id === extracted.destination_saved_place_id);
+        if (extracted.origin_description && !extracted.origin_saved_place_id) {
           setOriginQuery(extracted.origin_description);
           setOriginResults([]);
         }
-        if (extracted.destination_description) {
+        if (extracted.destination_description && !extracted.destination_saved_place_id) {
           setLocationQuery(extracted.destination_description);
           setLocationResults([]);
         }
-        setOriginSearching(Boolean(extracted.origin_description));
-        setLocationSearching(Boolean(extracted.destination_description));
+        setOriginSearching(Boolean(extracted.origin_description && !extracted.origin_saved_place_id));
+        setLocationSearching(Boolean(extracted.destination_description && !extracted.destination_saved_place_id));
         const completeTarget = localDateTimeFromExtraction(extracted.target_date_local, extracted.target_time_local);
         const currentParts = form.target_datetime.split("T");
         const nextDate = extracted.target_date_local ?? currentParts[0] ?? "";
@@ -503,12 +505,12 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
             : extracted.timezone || selectedTimezone || current.timezone,
           preparation_duration_minutes: extracted.preparation_duration_minutes ?? current.preparation_duration_minutes,
           travel_duration_minutes: extracted.travel_duration_minutes ?? current.travel_duration_minutes,
-          origin_location: extracted.origin_description ? null : current.origin_location,
-          location: extracted.destination_description ? null : current.location,
+          origin_location: savedOrigin ? savedPlaceLocation(savedOrigin) : extracted.origin_description ? null : current.origin_location,
+          location: savedDestination ? savedPlaceLocation(savedDestination) : extracted.destination_description ? null : current.location,
         }));
         const placeSearches = await Promise.allSettled([
-          ...(extracted.origin_description ? [scheduleApi.searchLocations(extracted.origin_description, token, { signal: controller.signal }).then((response) => { if (mounted.current) setOriginResults(response.results); return { kind: "origin" as const, count: response.results.length }; })] : []),
-          ...(extracted.destination_description ? [scheduleApi.searchLocations(extracted.destination_description, token, { signal: controller.signal }).then((response) => { if (mounted.current) setLocationResults(response.results); return { kind: "destination" as const, count: response.results.length }; })] : []),
+          ...(extracted.origin_description && !extracted.origin_saved_place_id ? [scheduleApi.searchLocations(extracted.origin_description, token, { signal: controller.signal }).then((response) => { if (mounted.current) setOriginResults(response.results); return { kind: "origin" as const, count: response.results.length }; })] : []),
+          ...(extracted.destination_description && !extracted.destination_saved_place_id ? [scheduleApi.searchLocations(extracted.destination_description, token, { signal: controller.signal }).then((response) => { if (mounted.current) setLocationResults(response.results); return { kind: "destination" as const, count: response.results.length }; })] : []),
         ]);
         if (!mounted.current) return;
         setOriginSearching(false);

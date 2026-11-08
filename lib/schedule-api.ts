@@ -94,6 +94,8 @@ export type ScheduleExtraction = {
   travel_duration_minutes: number | null;
   origin_description: string | null;
   destination_description: string | null;
+  origin_saved_place_id: number | null;
+  destination_saved_place_id: number | null;
   time_intent_ambiguous: boolean;
   ambiguities: string[];
 };
@@ -233,6 +235,8 @@ function isScheduleExtraction(value: unknown): value is ScheduleExtraction {
     (typeof value.travel_duration_minutes === "number" || value.travel_duration_minutes === null) &&
     isNullableString(value.origin_description) &&
     isNullableString(value.destination_description) &&
+    (typeof value.origin_saved_place_id === "number" || value.origin_saved_place_id === null) &&
+    (typeof value.destination_saved_place_id === "number" || value.destination_saved_place_id === null) &&
     typeof value.time_intent_ambiguous === "boolean" &&
     isStringList(value.ambiguities)
   );

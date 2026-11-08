@@ -27,7 +27,7 @@ from extraction_schemas import (
 )
 from extraction_service import ScheduleExtractionError, ScheduleExtractionService
 from main import app
-from models import Base, Schedule
+from models import Base, SavedPlace, Schedule
 from routers.schedules import create_schedule
 from schemas import ScheduleCreate
 from routers.extraction import get_extraction_service
@@ -135,6 +135,8 @@ def extraction_review(*, missing_intent: bool = False) -> ScheduleExtractionRevi
                 "travel_duration_minutes": None,
                 "origin_description": None,
                 "destination_description": None,
+                "origin_saved_place_id": None,
+                "destination_saved_place_id": None,
                 "time_intent_ambiguous": missing_intent,
                 "ambiguities": ["Arrival or departure is unclear."] if missing_intent else [],
             }
@@ -352,8 +354,14 @@ def test_extraction_endpoint_requires_verified_clerk_authentication() -> None:
 
 
 def test_extraction_endpoint_returns_ready_review_and_uses_verified_user_dependency(
-    api_db: None, signing_key: str
+    api_db: Engine, signing_key: str
 ) -> None:
+    with Session(api_db) as db:
+        db.add_all([
+            SavedPlace(clerk_user_id="user_alpha", alias="Home", display_name="Alpha home", latitude=15, longitude=121, location_source="map_pin"),
+            SavedPlace(clerk_user_id="user_beta", alias="Home", display_name="Beta home", latitude=16, longitude=122, location_source="map_pin"),
+        ])
+        db.commit()
     service = StubExtractionService(extraction_review())
     app.dependency_overrides[get_extraction_service] = lambda: service
 
@@ -372,6 +380,7 @@ def test_extraction_endpoint_returns_ready_review_and_uses_verified_user_depende
     assert service.calls[0]["text"] == "I need to arrive at class tomorrow at 7"
     assert service.calls[0]["user_timezone"] == "Asia/Manila"
     assert service.calls[0]["reference_datetime"].tzinfo == timezone.utc
+    assert [place.clerk_user_id for place in service.calls[0]["saved_places"]] == ["user_alpha"]
 
 
 def test_extraction_endpoint_returns_structured_clarification(

@@ -23,7 +23,7 @@ ExtractionInputText = Annotated[
 DurationMinutes = Annotated[int, Field(strict=True, ge=0, le=100_000)]
 
 
-class ScheduleExtraction(BaseModel):
+class ScheduleExtractionCandidate(BaseModel):
     """Untrusted extraction candidates; absent or unclear facts remain null."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -70,6 +70,13 @@ class ScheduleExtraction(BaseModel):
             "timezone": self.timezone,
         }
         return [name for name, value in required.items() if value is None]
+
+
+class ScheduleExtraction(ScheduleExtractionCandidate):
+    """Validated extraction plus deterministic saved-place resolutions."""
+
+    origin_saved_place_id: int | None = None
+    destination_saved_place_id: int | None = None
 
 
 class ExtractionReviewStatus(str, Enum):
