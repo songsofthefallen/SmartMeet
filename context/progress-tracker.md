@@ -1,5 +1,12 @@
 ## Current Progress
 
+### Uncertainty-aware natural-language schedule clarification
+
+- Added deterministic structured clarification data (`field`, `reason`, `question`, `answer_type`, and quick-choice options) with one blocking field chosen per turn. The AI remains limited to candidate extraction; backend schema, timezone, and validation rules decide readiness.
+- Clarifications now use authenticated, per-user 30-minute extraction drafts. Follow-up answers reuse the original text and draft, update only the asked field, preserve unrelated extraction values and Saved Place IDs, retain selected external location snapshots across turns, and never create a schedule from the clarification endpoint. Expired and cross-user drafts are rejected; ready drafts are removed. The existing schedule-create idempotency key still governs eventual persistence.
+- The current app has no account-level default origin. When a user states a destination but no origin, extraction asks for the origin rather than silently assuming Home. Location-free event requests remain supported when no destination is stated. Ambiguous external places continue through existing TomTom candidate selection.
+- Verification passed: full backend suite (**384 passed**), frontend suite, `npx tsc --noEmit`, ESLint, production build, `python -m alembic heads` (single head `20261108_0015`), and `git diff --check`. Pytest emitted a cache-directory `WinError 183` warning; all tests completed successfully. No live database migration, OpenRouter request, or browser interaction was performed.
+
 ### SmartMeet Saved Places aware schedule extraction
 
 - Authenticated `/schedules/extract` now loads Saved Places using the verified Clerk subject and passes alias/name candidates into the existing extraction service as context. The service attaches an authoritative saved-place ID only when the extracted location phrase exactly matches one unique normalized alias or display name (case and whitespace insensitive). Multiple matches produce a clarification and no ID.

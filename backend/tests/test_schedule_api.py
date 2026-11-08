@@ -5,14 +5,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import jwt
 import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
@@ -27,7 +27,7 @@ from extraction_schemas import (
 )
 from extraction_service import ScheduleExtractionError, ScheduleExtractionService
 from main import app
-from models import Base, SavedPlace, Schedule
+from models import Base, ExtractionDraft, SavedPlace, Schedule
 from routers.schedules import create_schedule
 from schemas import ScheduleCreate
 from routers.extraction import get_extraction_service
@@ -399,6 +399,104 @@ def test_extraction_endpoint_returns_structured_clarification(
     assert response.json()["status"] == "needs_clarification"
     assert response.json()["missing_fields"] == ["time_intent"]
     assert "time_intent" in response.json()["ambiguous_fields"]
+    assert response.json()["draft_id"]
+    assert response.json()["clarification"]["field"] == "time_intent"
+    assert response.json()["clarification"]["options"] == ["Arrive at that time", "Leave at that time"]
+
+
+def test_clarification_drafts_are_user_scoped_and_expire(api_db: Engine, signing_key: str) -> None:
+    review = extraction_review(missing_intent=True)
+    now = datetime.now(timezone.utc)
+    with Session(api_db) as db:
+        db.add_all([
+            ExtractionDraft(id="11111111-1111-1111-1111-111111111111", clerk_user_id="user_beta",
+                original_text="class tomorrow", timezone="Asia/Manila", extraction=review.extraction.model_dump(mode="json"),
+                clarification_field="time_intent", expires_at=now + timedelta(minutes=30)),
+            ExtractionDraft(id="22222222-2222-2222-2222-222222222222", clerk_user_id="user_alpha",
+                original_text="class tomorrow", timezone="Asia/Manila", extraction=review.extraction.model_dump(mode="json"),
+                clarification_field="time_intent", expires_at=now - timedelta(seconds=1)),
+        ])
+        db.commit()
+    service = StubExtractionService(extraction_review())
+    app.dependency_overrides[get_extraction_service] = lambda: service
+    client = TestClient(app)
+    other_user = client.post("/schedules/extract/11111111-1111-1111-1111-111111111111/clarify",
+        headers=bearer(signing_key, "user_alpha"), json={"answer": "arrive at 8"})
+    expired = client.post("/schedules/extract/22222222-2222-2222-2222-222222222222/clarify",
+        headers=bearer(signing_key), json={"answer": "arrive at 8"})
+    assert other_user.status_code == 404
+    assert expired.status_code == 410
+    assert service.calls == []
+
+
+def test_clarification_answer_reuses_draft_and_returns_ready_result_without_saving_schedule(
+    api_db: Engine, signing_key: str
+) -> None:
+    initial = extraction_review(missing_intent=True)
+    draft_id = "33333333-3333-3333-3333-333333333333"
+    with Session(api_db) as db:
+        db.add(ExtractionDraft(id=draft_id, clerk_user_id="user_alpha", original_text="class tomorrow",
+            timezone="Asia/Manila", extraction=initial.extraction.model_dump(mode="json"),
+            clarification_field="time_intent", expires_at=datetime.now(timezone.utc) + timedelta(minutes=30)))
+        db.commit()
+    service = StubExtractionService(extraction_review())
+    app.dependency_overrides[get_extraction_service] = lambda: service
+    response = TestClient(app).post(f"/schedules/extract/{draft_id}/clarify", headers=bearer(signing_key),
+        json={"answer": "I need to arrive at 8 AM", "origin_location": {
+            "name": "Home", "locality": None, "region": None, "country": None,
+            "latitude": 15.0, "longitude": 121.0, "timezone": "Asia/Manila"}})
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready_for_review"
+    assert response.json()["draft_id"] is None
+    assert service.calls[0]["text"] == "class tomorrow"
+    assert service.calls[0]["clarification_field"] == "time_intent"
+    assert service.calls[0]["clarification_answer"] == "I need to arrive at 8 AM"
+    with Session(api_db) as db:
+        assert db.get(ExtractionDraft, draft_id) is None
+        assert db.scalar(select(Schedule.id)) is None
+
+
+def test_multiple_clarification_turns_keep_draft_id_and_external_location_snapshot(
+    api_db: Engine, signing_key: str
+) -> None:
+    initial = extraction_review(missing_intent=True)
+    draft_id = "44444444-4444-4444-4444-444444444444"
+    with Session(api_db) as db:
+        db.add(ExtractionDraft(id=draft_id, clerk_user_id="user_alpha", original_text="class tomorrow",
+            timezone="Asia/Manila", extraction=initial.extraction.model_dump(mode="json"),
+            clarification_field="time_intent", expires_at=datetime.now(timezone.utc) + timedelta(minutes=30)))
+        db.commit()
+
+    class SequenceService:
+        def __init__(self) -> None:
+            self.results = [extraction_review(missing_intent=True), extraction_review()]
+            self.calls: list[dict[str, object]] = []
+
+        def extract(self, text: str, **kwargs: object) -> ScheduleExtractionReview:
+            self.calls.append({"text": text, **kwargs})
+            return self.results.pop(0)
+
+    service = SequenceService()
+    app.dependency_overrides[get_extraction_service] = lambda: service
+    client = TestClient(app)
+    location = {"name": "Selected campus", "locality": "Manila", "region": None, "country": "Philippines",
+        "latitude": 14.6, "longitude": 121.0, "timezone": "Asia/Manila"}
+    first = client.post(f"/schedules/extract/{draft_id}/clarify", headers=bearer(signing_key),
+        json={"answer": "Arrive", "destination_location": location})
+    assert first.status_code == 200
+    assert first.json()["draft_id"] == draft_id
+    with Session(api_db) as db:
+        stored = db.get(ExtractionDraft, draft_id)
+        assert stored.destination_location == location
+    second = client.post(f"/schedules/extract/{draft_id}/clarify", headers=bearer(signing_key),
+        json={"answer": "At 8 AM", "destination_location": location})
+    assert second.status_code == 200
+    assert second.json()["status"] == "ready_for_review"
+    assert second.json()["draft_id"] is None
+    assert len(service.calls) == 2
+    with Session(api_db) as db:
+        assert db.get(ExtractionDraft, draft_id) is None
+        assert db.scalar(select(Schedule.id)) is None
 
 
 def test_extraction_endpoint_parses_title_free_provider_response(

@@ -100,6 +100,14 @@ export type ScheduleExtraction = {
   ambiguities: string[];
 };
 
+export type ScheduleExtractionClarification = {
+  field: string;
+  reason: string;
+  question: string;
+  answer_type: "choice" | "date" | "time" | "timezone" | "location" | "text";
+  options: string[];
+};
+
 export type ScheduleExtractionReview = {
   status: "ready_for_review" | "needs_clarification";
   extraction: ScheduleExtraction | null;
@@ -107,6 +115,8 @@ export type ScheduleExtractionReview = {
   missing_fields: string[];
   ambiguous_fields: string[];
   invalid_fields: string[];
+  draft_id: string | null;
+  clarification: ScheduleExtractionClarification | null;
 };
 
 export class ScheduleApiError extends Error {
@@ -251,7 +261,16 @@ function isScheduleExtractionReview(value: unknown): value is ScheduleExtraction
     isStringList(value.missing_fields) &&
     isStringList(value.ambiguous_fields) &&
     isStringList(value.invalid_fields)
+    && isNullableString(value.draft_id)
+    && (value.clarification === null || isScheduleExtractionClarification(value.clarification))
   );
+}
+
+function isScheduleExtractionClarification(value: unknown): value is ScheduleExtractionClarification {
+  return isRecord(value) && typeof value.field === "string" && typeof value.reason === "string" &&
+    typeof value.question === "string" &&
+    ["choice", "date", "time", "timezone", "location", "text"].includes(value.answer_type as string) &&
+    isStringList(value.options);
 }
 
 function validationMessage(detail: unknown): string | null {
@@ -412,6 +431,18 @@ export const scheduleApi = {
       { text, timezone },
       isScheduleExtractionReview,
       options,
+    );
+  },
+  clarifyExtraction(
+    draftId: string,
+    answer: string,
+    token: string | null,
+    locations?: { origin_location: LocationSelection | null; destination_location: LocationSelection | null },
+    options?: ScheduleRequestOptions,
+  ) {
+    return request<ScheduleExtractionReview>(
+      `/schedules/extract/${encodeURIComponent(draftId)}/clarify`, token, "POST", { answer, ...locations },
+      isScheduleExtractionReview, options,
     );
   },
   list(token: string | null, options?: ScheduleRequestOptions) {

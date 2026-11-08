@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { CalendarDays, Check, Pencil, Plus, RefreshCw, X } from "lucide-react";
+import { CalendarDays, Check, Pencil, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { scheduleApi, ScheduleApiError, type LocationSelection, type RouteAlternativeEstimate, type Schedule, type ScheduleExtractionReview, type ScheduleInput, type ScheduleIntent, type ScheduleUpdateInput, type SavedPlace, type TrafficSectionEstimate } from "@/lib/schedule-api";
 import { clarificationQuestions } from "@/lib/clarification-messages";
@@ -132,6 +132,8 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
   const [extractionReview, setExtractionReview] = useState<ScheduleExtractionReview | null>(null);
   const [extractionError, setExtractionError] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
+  const [clarificationAnswer, setClarificationAnswer] = useState("");
+  const [clarifying, setClarifying] = useState(false);
   const [extractionDate, setExtractionDate] = useState("");
   const [extractionTime, setExtractionTime] = useState("");
   const [timezoneConflictConfirmed, setTimezoneConflictConfirmed] = useState(false);
@@ -355,6 +357,8 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
     setExtractionText("");
     setExtractionReview(null);
     setExtractionError(null);
+    setClarificationAnswer("");
+    setClarifying(false);
     setExtractionDate("");
     setExtractionTime("");
     setTimezoneConflictConfirmed(false);
@@ -534,8 +538,85 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
     }
   }
 
+  async function answerClarification(answer = clarificationAnswer) {
+    const activeReview = extractionReview;
+    if (!activeReview?.draft_id || !activeReview.clarification || !answer.trim() || clarifying || saving) return;
+    setClarifying(true);
+    setExtractionError(null);
+    clearRouteUnavailableConfirmation();
+    const controller = new AbortController();
+    activeControllers.current.add(controller);
+    try {
+      const previous = activeReview.extraction;
+      const nextReview = await scheduleApi.clarifyExtraction(activeReview.draft_id, answer.trim(), await getToken(), {
+        origin_location: form.origin_location,
+        destination_location: form.location,
+      }, { signal: controller.signal });
+      if (!mounted.current) return;
+      autoSavePending.current = true;
+      idempotencyKey.current ??= crypto.randomUUID();
+      setExtractionReview(nextReview);
+      setClarificationAnswer("");
+      setTimezoneConflictConfirmed(!nextReview.ambiguous_fields.includes("timezone"));
+      const next = nextReview.extraction;
+      if (next) {
+        const field = activeReview.clarification.field;
+        const originChanged = field === "origin_description" || next.origin_description !== previous?.origin_description;
+        const destinationChanged = field === "destination_description" || next.destination_description !== previous?.destination_description;
+        const savedOrigin = savedPlaces.find((place) => place.id === next.origin_saved_place_id);
+        const savedDestination = savedPlaces.find((place) => place.id === next.destination_saved_place_id);
+        const parts = form.target_datetime.split("T");
+        const nextDate = next.target_date_local ?? parts[0] ?? "";
+        const nextTime = localTimeInputFromExtraction(next.target_time_local) ?? parts[1] ?? "";
+        setExtractionDate(nextDate);
+        setExtractionTime(nextTime);
+        setForm((current) => ({
+          ...current,
+          time_intent: next.time_intent ?? current.time_intent,
+          target_datetime: localDateTimeFromExtraction(nextDate || null, next.target_time_local) ??
+            (nextTime && nextDate ? `${nextDate}T${nextTime.slice(0, 5)}` : current.target_datetime),
+          timezone: nextReview.ambiguous_fields.includes("timezone") ? current.timezone : next.timezone || current.timezone,
+          origin_location: savedOrigin ? savedPlaceLocation(savedOrigin) : originChanged ? null : current.origin_location,
+          location: savedDestination ? savedPlaceLocation(savedDestination) : destinationChanged ? null : current.location,
+        }));
+        if (originChanged) {
+          setOriginQuery(next.origin_description ?? ""); setOriginResults([]);
+          if (next.origin_description && !next.origin_saved_place_id) {
+            setOriginSearching(true);
+            void scheduleApi.searchLocations(next.origin_description, await getToken(), { signal: controller.signal })
+              .then((result) => { if (mounted.current) setOriginResults(result.results); })
+              .catch((error) => { if (mounted.current && !isCancellation(error)) setMessage({ kind: "error", text: messageFor(error) }); })
+              .finally(() => { if (mounted.current) setOriginSearching(false); });
+          }
+        }
+        if (destinationChanged) {
+          setLocationQuery(next.destination_description ?? ""); setLocationResults([]);
+          if (next.destination_description && !next.destination_saved_place_id) {
+            setLocationSearching(true);
+            void scheduleApi.searchLocations(next.destination_description, await getToken(), { signal: controller.signal })
+              .then((result) => { if (mounted.current) setLocationResults(result.results); })
+              .catch((error) => { if (mounted.current && !isCancellation(error)) setMessage({ kind: "error", text: messageFor(error) }); })
+              .finally(() => { if (mounted.current) setLocationSearching(false); });
+          }
+        }
+      }
+    } catch (error) {
+      if (mounted.current && !isCancellation(error)) {
+        if (error instanceof ScheduleApiError && error.status === 410) {
+          setExtractionReview(null);
+          autoSavePending.current = false;
+        }
+        setExtractionError(messageFor(error));
+      }
+    } finally {
+      activeControllers.current.delete(controller);
+      if (mounted.current) setClarifying(false);
+    }
+  }
+
   useEffect(() => {
     if (!autoSavePending.current || !extractionReview || editingId !== null) return;
+    if (extractionReview.status === "needs_clarification") return;
     const valid = isAssistantAutosaveEligible({
       timeIntent: form.time_intent,
       targetDateTime: form.target_datetime,
@@ -845,16 +926,22 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
                 {!editingId && <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)] p-4" aria-labelledby="natural-language-heading">
                   <h3 id="natural-language-heading" className="font-semibold">Describe your schedule</h3>
                   <p className="mt-1 text-sm text-[var(--text-muted)]">AI will prepare a draft using the selected timezone. Review every field before saving.</p>
-                  <textarea className={fieldClass} rows={3} maxLength={4000} value={extractionText} onChange={(event) => { setExtractionText(event.target.value); setExtractionReview(null); setExtractionError(null); }} placeholder="e.g. I need to arrive at school tomorrow at 7" aria-label="Schedule description for extraction" />
+                  <textarea className={fieldClass} rows={3} maxLength={4000} value={extractionText} onChange={(event) => { setExtractionText(event.target.value); setExtractionReview(null); setExtractionError(null); setClarificationAnswer(""); }} placeholder="e.g. I need to arrive at school tomorrow at 7" aria-label="Schedule description for extraction" />
                   <p className="mt-1 text-xs text-[var(--text-muted)]">Timezone context: {form.timezone ? timezoneLabel(form.timezone) : "not selected"}</p>
-                  <button type="button" className={`${secondaryButton} mt-3`} onClick={() => void extractSchedule()} disabled={extracting || saving || !extractionText.trim()}>
+                  <button type="button" className={`${secondaryButton} mt-3`} onClick={() => void extractSchedule()} disabled={extracting || clarifying || saving || !extractionText.trim()}>
                     {extracting ? "Extracting..." : extractionReview || extractionError ? "Retry extraction" : "Extract draft"}
                   </button>
                   {extracting && <p className="mt-2 text-sm text-[var(--text-muted)]" role="status">Preparing a draft. Your text remains here if the request fails.</p>}
                   {extractionError && <div className="mt-3 rounded-lg border border-[var(--state-error)]/20 bg-[var(--state-error-bg)] px-3 py-2 text-sm text-[var(--state-error)]" role="alert">{extractionError} Your description is preserved; retry or continue manually.</div>}
                   {extractionReview && <div className={`mt-3 rounded-lg border px-3 py-3 text-sm ${extractionReview.status === "ready_for_review" ? "border-[var(--state-success)]/20 bg-[var(--state-success-bg)] text-[var(--state-success)]" : "border-[var(--state-warning)]/25 bg-[var(--state-warning-bg)] text-[var(--state-warning)]"}`} role="status">
                     <p className="font-semibold">{extractionReview.status === "ready_for_review" ? "Draft ready for your review" : "More information is needed"}</p>
-                    {extractionQuestions.length > 0 && <ul className="mt-2 list-disc space-y-1 pl-5">{extractionQuestions.map((question, index) => <li key={`${question}-${index}`}>{question}</li>)}</ul>}
+                    {extractionQuestions.length > 0 && <p className="mt-2" aria-live="polite">{extractionQuestions[0]}</p>}
+                    {extractionReview.status === "needs_clarification" && extractionReview.clarification && <div className="mt-3 rounded-lg bg-[var(--surface)] p-3" aria-label="Answer clarification">
+                      <p className="text-xs text-[var(--text-muted)]">{extractionReview.clarification.reason}</p>
+                      {extractionReview.clarification.options.length > 0 && <div className="mt-2 flex flex-wrap gap-2">{extractionReview.clarification.options.map((option) => <button key={option} type="button" className={secondaryButton} disabled={clarifying || extracting} onClick={() => setClarificationAnswer(option)}>{option}</button>)}</div>}
+                      <label className="mt-2 block text-xs font-medium" htmlFor="schedule-clarification-answer">Your answer<textarea id="schedule-clarification-answer" className={fieldClass} rows={2} maxLength={1000} value={clarificationAnswer} onChange={(event) => setClarificationAnswer(event.target.value)} placeholder="Type your answer in your own words" /></label>
+                      <button type="button" className={`${primaryButton} mt-2`} disabled={clarifying || extracting || !clarificationAnswer.trim()} onClick={() => void answerClarification()}>{clarifying ? "Updating draft…" : "Answer and continue"}</button>
+                    </div>}
                     {extractionReview.extraction && (extractionReview.extraction.origin_description || extractionReview.extraction.destination_description) && <p className="mt-2">Select a matching result for each extracted place before automatic saving. Locations remain optional for schedules that do not need routing.</p>}
                     {extractionReview.ambiguous_fields.includes("timezone") && <label className="mt-3 flex items-start gap-2"><input type="checkbox" checked={timezoneConflictConfirmed} onChange={(event) => setTimezoneConflictConfirmed(event.target.checked)} /><span>I confirm that {form.timezone} should interpret the target time.</span></label>}
                     {extractionReview.extraction && <p className="mt-2 text-xs">Known values are filled into the editable form. Nothing has been saved.</p>}
@@ -874,7 +961,7 @@ export default function ScheduleWorkspace({ startInCreate = false }: { startInCr
                 <div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-medium">Time intent <span className="text-[var(--state-error)]">*</span><select className={fieldClass} required value={form.time_intent} onChange={(e) => { clearRouteUnavailableConfirmation(); setForm({ ...form, time_intent: e.target.value as ScheduleIntent | "" }); }}><option value="" disabled>Select arrival or departure</option><option value="arrival">Arrive by</option><option value="departure">Leave at</option></select></label><label className="block text-sm font-medium">Timezone<select className={fieldClass} required value={form.timezone} onChange={(e) => { clearRouteUnavailableConfirmation(); setForm({ ...form, timezone: e.target.value }); setTimezoneConflictConfirmed(false); }}>{Array.from(new Set([form.timezone, ...supportedTimeZones])).sort().map((timezone) => <option key={timezone} value={timezone}>{timezoneLabel(timezone)}</option>)}</select><span className="mt-1 block text-xs font-normal text-[var(--text-muted)]">The target time is interpreted in this timezone.</span></label></div>
                 <div className="grid gap-4 sm:grid-cols-2"><label className="block text-sm font-medium">Preparation <span className="font-normal text-[var(--text-muted)]">(optional, minutes)</span><input className={fieldClass} type="number" min="0" step="1" value={form.preparation_duration_minutes ?? ""} onChange={(e) => setForm({ ...form, preparation_duration_minutes: e.target.value === "" ? null : Number(e.target.value) })} /></label><label className="block text-sm font-medium">Travel duration <span className="font-normal text-[var(--text-muted)]">(optional, minutes)</span><input className={fieldClass} type="number" min="0" step="1" value={form.travel_duration_minutes ?? ""} onChange={(e) => setForm({ ...form, travel_duration_minutes: e.target.value === "" ? null : Number(e.target.value) })} /></label></div>
                 {routeUnavailableConfirmation && !hasDefinitiveNoRoute && <div className="mt-4 rounded-xl border border-[var(--state-warning)]/30 bg-[var(--state-warning-bg)] p-4 text-sm text-[var(--state-warning)]" role="alert"><p className="font-semibold">No drivable route found</p><p className="mt-1">TomTom could not find a drivable route between these locations. A traffic estimate will be unavailable, but weather can be assessed separately. Do you want to save anyway?</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" className={primaryButton} disabled={saving} onClick={() => { continueWithoutRoute.current = true; setRouteUnavailableConfirmation(false); scheduleForm.current?.requestSubmit(); }}>Save without route estimate</button><button type="button" className={secondaryButton} onClick={() => { clearRouteUnavailableConfirmation(); }}>Review locations</button></div></div>}
-              </div><div className="mt-6 flex flex-col-reverse gap-3 border-t border-[var(--border)] pt-5 sm:flex-row sm:justify-end"><button type="button" className={secondaryButton} disabled={saving || extracting} onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>Discard</button><button type="submit" className={editingId === null ? dashboardActionButton : primaryButton} disabled={saving || extracting || (editingId === null && routeLocationsReady && (!currentRouteOptions?.some((route) => route.route_id === selectedRouteId) || routeOptionsLoading))}>{saving ? "Saving..." : <><CheckIcon /> {editingId ? "Save changes" : extractionReview?.extraction ? "Save reviewed schedule" : "Add schedule"}</>}</button></div></form> : selected ? <div className="p-5 sm:p-6"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">SCHEDULE DETAILS</p><h2 className="mt-1 text-xl font-bold leading-snug">{selected.title}</h2></div><span className={`rounded-lg px-2.5 py-1 text-xs font-semibold capitalize ${selected.status === "active" ? "bg-[var(--state-success-bg)] text-[var(--state-success)]" : "bg-[var(--surface-secondary)] text-[var(--text-secondary)]"}`}>{selected.status}</span></div>
+              </div><div className="mt-6 flex flex-col-reverse gap-3 border-t border-[var(--border)] pt-5 sm:flex-row sm:justify-end"><button type="button" className={secondaryButton} disabled={saving || extracting || clarifying} onClick={() => { setView(selected ? "detail" : "list"); setMessage(null); }}>Discard</button><button type="submit" className={editingId === null ? dashboardActionButton : primaryButton} disabled={saving || extracting || clarifying || (editingId === null && extractionReview?.status === "needs_clarification") || (editingId === null && routeLocationsReady && (!currentRouteOptions?.some((route) => route.route_id === selectedRouteId) || routeOptionsLoading))}>{saving ? "Saving..." : <><CheckIcon /> {editingId ? "Save changes" : extractionReview?.extraction ? "Save reviewed schedule" : "Add schedule"}</>}</button></div></form> : selected ? <div className="p-5 sm:p-6"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[var(--brand-primary)]">SCHEDULE DETAILS</p><h2 className="mt-1 text-xl font-bold leading-snug">{selected.title}</h2></div><span className={`rounded-lg px-2.5 py-1 text-xs font-semibold capitalize ${selected.status === "active" ? "bg-[var(--state-success-bg)] text-[var(--state-success)]" : "bg-[var(--surface-secondary)] text-[var(--text-secondary)]"}`}>{selected.status}</span></div>
               {detailLoading ? <p className="mt-4 text-sm text-[var(--text-muted)]" role="status">Refreshing schedule details...</p> : null}
               {showPastScheduleNotices(selected.is_past) && <div className="mt-4 rounded-xl border border-[var(--state-warning)]/30 bg-[var(--state-warning-bg)] p-3 text-sm text-[var(--state-warning)]" role="status"><p className="font-semibold">{PAST_SCHEDULE_BANNER_TITLE}</p><p className="mt-1">Live traffic and future weather advisories no longer apply to this intended trip. The schedule remains editable and can be cancelled.</p></div>}
               {showPostDepartureRouteWarning(selected.is_past, selected.route_warning) && <div className="mt-4 rounded-xl border border-[var(--state-warning)]/30 bg-[var(--state-warning-bg)] p-3 text-sm text-[var(--state-warning)]" role="status"><p>{selected.route_warning}</p>{selected.travel_estimate && <p className="mt-1 text-xs">Retrieved {formatDate(selected.travel_estimate.retrieved_at, selected.timezone, true)}; intended departure {formatDate(selected.calculated_departure_time ?? selected.target_datetime, selected.timezone, true)}.</p>}</div>}
@@ -932,7 +1019,6 @@ function LocationPicker({ label, value, savedPlaces, query, results, searching, 
 
 function DetailRow({ label, value }: { label: string; value: string }) { return <div className="grid grid-cols-[minmax(100px,0.7fr)_1.3fr] gap-3 py-3 text-sm"><dt className="text-[var(--text-muted)]">{label}</dt><dd className="break-words font-medium capitalize text-[var(--text-primary)]">{value}</dd></div>; }
 function CalendarIcon() { return <CalendarDays aria-hidden="true" className="h-5 w-5" strokeWidth={1.8} />; }
-function PlusIcon() { return <Plus aria-hidden="true" className="h-4 w-4" strokeWidth={2} />; }
 function CheckIcon() { return <Check aria-hidden="true" className="h-4 w-4" strokeWidth={2} />; }
 function PencilIcon() { return <Pencil aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />; }
 function CloseIcon() { return <X aria-hidden="true" className="h-4 w-4" strokeWidth={1.8} />; }

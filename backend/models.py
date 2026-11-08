@@ -76,6 +76,25 @@ class SavedPlace(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp())
 
 
+class ExtractionDraft(Base):
+    """Short-lived, user-owned state for answering extraction clarifications."""
+
+    __tablename__ = "extraction_drafts"
+    __table_args__ = (Index("ix_extraction_drafts_user_expires", "clerk_user_id", "expires_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    clerk_user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_text: Mapped[str] = mapped_column(Text, nullable=False)
+    timezone: Mapped[str | None] = mapped_column(String(64))
+    extraction: Mapped[dict | None] = mapped_column(JSON)
+    clarification_field: Mapped[str | None] = mapped_column(String(64))
+    origin_location: Mapped[dict | None] = mapped_column(JSON)
+    destination_location: Mapped[dict | None] = mapped_column(JSON)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp())
+
+
 class Schedule(Base):
     """A schedule owned by a Clerk user."""
 

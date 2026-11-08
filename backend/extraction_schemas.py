@@ -2,7 +2,7 @@
 
 from datetime import date, datetime, time, timezone
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 from models import TimeIntent
+from schemas import LocationSelection
 from timezone_utils import get_iana_timezone
 
 
@@ -84,6 +85,18 @@ class ExtractionReviewStatus(str, Enum):
     NEEDS_CLARIFICATION = "needs_clarification"
 
 
+class ExtractionClarification(BaseModel):
+    """One focused, deterministic next question for an incomplete extraction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    reason: Annotated[str, StringConstraints(min_length=1, max_length=300)]
+    question: Annotated[str, StringConstraints(min_length=1, max_length=300)]
+    answer_type: Literal["choice", "date", "time", "timezone", "location", "text"]
+    options: list[Annotated[str, StringConstraints(min_length=1, max_length=80)]] = Field(default_factory=list, max_length=5)
+
+
 class ScheduleExtractionReview(BaseModel):
     """Structured readiness result for a validated extraction candidate."""
 
@@ -95,6 +108,8 @@ class ScheduleExtractionReview(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     ambiguous_fields: list[str] = Field(default_factory=list)
     invalid_fields: list[str] = Field(default_factory=list)
+    draft_id: Annotated[str, StringConstraints(min_length=36, max_length=36)] | None = None
+    clarification: ExtractionClarification | None = None
 
     @field_validator("resolved_target_datetime")
     @classmethod
@@ -125,7 +140,51 @@ class ScheduleExtractionReview(BaseModel):
             and not (self.missing_fields or self.ambiguous_fields or self.invalid_fields)
         ):
             raise ValueError("needs_clarification requires a reported issue")
+        if self.status is ExtractionReviewStatus.NEEDS_CLARIFICATION:
+            self.clarification = self.clarification or _next_clarification(self)
+        elif self.status is ExtractionReviewStatus.READY_FOR_REVIEW:
+            self.clarification = None
         return self
+
+
+def _next_clarification(review: ScheduleExtractionReview) -> ExtractionClarification:
+    """Choose one blocking field in a stable order and phrase it without model scores."""
+    extraction = review.extraction
+    if extraction is None:
+        return ExtractionClarification(field="model_output", reason="The extracted details could not be validated.", question="Could you restate the event, date, and time?", answer_type="text")
+    ordered = (
+        "schedule_request", "time_intent", "target_date_local", "target_time_local", "timezone",
+        "destination_description", "origin_description", "ambiguities",
+    )
+    fields = set(review.missing_fields + review.ambiguous_fields + review.invalid_fields)
+    if "schedule_request" in fields:
+        return ExtractionClarification(field="schedule_request", reason="The request does not yet identify an event to schedule.", question="What event or plan should I schedule?", answer_type="text")
+    if "target_time_offset" in fields:
+        fields.add("target_time_local")
+    if "ambiguities" in fields and extraction.ambiguities:
+        text = extraction.ambiguities[0].casefold()
+        if any(word in text for word in ("arrival", "departure", "leaving", "leave at", "arrive by")):
+            fields.add("time_intent")
+        elif any(word in text for word in ("date", "day", "friday", "saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "tomorrow")):
+            fields.add("target_date_local")
+        elif any(word in text for word in ("origin", "starting point", "from where")):
+            fields.add("origin_description")
+        elif any(word in text for word in ("destination", "which mall", "which school", "which location")):
+            fields.add("destination_description")
+    field = next((candidate for candidate in ordered if candidate in fields), "ambiguities")
+    if field == "time_intent":
+        return ExtractionClarification(field=field, reason="The wording does not clearly say whether the time is for arriving or leaving.", question="Is that time for arriving or leaving?", answer_type="choice", options=["Arrive at that time", "Leave at that time"])
+    if field == "target_date_local":
+        return ExtractionClarification(field=field, reason="A valid local date is needed before the schedule can be prepared.", question="What date should I use?", answer_type="date")
+    if field == "target_time_local":
+        reason = "The extracted local time is invalid or ambiguous." if field in review.ambiguous_fields + review.invalid_fields else "A target time is needed before the schedule can be prepared."
+        return ExtractionClarification(field=field, reason=reason, question="What local time should I use?", answer_type="time")
+    if field == "timezone":
+        return ExtractionClarification(field=field, reason="The target time needs an agreed timezone.", question="Which timezone should interpret this time?", answer_type="timezone")
+    if field in ("origin_description", "destination_description"):
+        label = "starting point" if field == "origin_description" else "destination"
+        return ExtractionClarification(field=field, reason=f"The {label} could not be identified confidently.", question=f"Where is the {label}?", answer_type="location")
+    return ExtractionClarification(field=field, reason="The extracted information is still ambiguous.", question="Could you clarify this detail?", answer_type="text")
 
 
 class ScheduleExtractionRequest(BaseModel):
@@ -144,3 +203,13 @@ class ScheduleExtractionRequest(BaseModel):
         if value is not None:
             get_iana_timezone(value)
         return value
+
+
+class ScheduleExtractionClarificationRequest(BaseModel):
+    """Natural-language answer to the one active question on an extraction draft."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    origin_location: LocationSelection | None = None
+    destination_location: LocationSelection | None = None

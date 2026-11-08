@@ -85,6 +85,29 @@ test("aborted requests are reported as cancellation instead of service outage", 
   }
 });
 
+test("clarification answers use the owned draft route and accept structured next-question data", async () => {
+  const originalFetch = globalThis.fetch;
+  let sentBody: unknown;
+  globalThis.fetch = async (input, init) => {
+    assert.equal(new URL(String(input)).pathname, "/schedules/extract/draft-1/clarify");
+    assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer token");
+    sentBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      status: "needs_clarification", extraction: null, resolved_target_datetime: null,
+      missing_fields: [], ambiguous_fields: [], invalid_fields: ["model_output"],
+      draft_id: "11111111-1111-1111-1111-111111111111",
+      clarification: { field: "model_output", reason: "More detail is needed.", question: "What date?", answer_type: "text", options: [] },
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const result = await scheduleApi.clarifyExtraction("draft-1", "Tomorrow at 8", "token", {
+      origin_location: null, destination_location: null,
+    });
+    assert.deepEqual(sentBody, { answer: "Tomorrow at 8", origin_location: null, destination_location: null });
+    assert.equal(result.clarification?.question, "What date?");
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("saved place CRUD uses the authenticated API and preserves its confirmed location", async () => {
   const originalFetch = globalThis.fetch;
   const calls: { path: string; method: string; body?: unknown }[] = [];

@@ -5,7 +5,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from ai_provider import AIProviderError, AISettings, OpenRouterClient
+from ai_provider import AIInvalidOutputError, AIProviderError, AISettings, OpenRouterClient
 from extraction_schemas import ExtractionReviewStatus, ScheduleExtraction, ScheduleExtractionCandidate
 from extraction_service import ScheduleExtractionError, ScheduleExtractionService
 from models import SavedPlace, TimeIntent
@@ -149,6 +149,43 @@ def test_extraction_without_relevant_saved_places_keeps_existing_location_behavi
     assert "Home address" not in client.messages[1]["content"]
 
 
+def test_stated_destination_without_origin_requests_one_instead_of_assuming_home() -> None:
+    saved_places = [_saved_place(10, "Home")]
+    result = ScheduleExtractionService(MockExtractionClient(parsed_candidate(
+        destination_description="SM Cabanatuan"))).extract(
+            "I need to arrive at SM Cabanatuan by 10 AM",
+            reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+            user_timezone="Asia/Manila", saved_places=saved_places)
+    assert result.status is ExtractionReviewStatus.NEEDS_CLARIFICATION
+    assert result.missing_fields == ["origin_description"]
+    assert result.clarification.field == "origin_description"
+    assert result.clarification.question == "Where is the starting point?"
+    assert result.extraction.origin_saved_place_id is None
+
+
+def test_multiple_missing_fields_produce_only_the_highest_priority_question() -> None:
+    result = ScheduleExtractionService(MockExtractionClient(parsed_candidate(
+        time_intent=None, target_date_local=None, target_time_local=None, timezone=None,
+        time_intent_ambiguous=True))).extract(
+            "I have a plan", reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"))
+    assert result.missing_fields == ["time_intent", "target_date_local", "target_time_local", "timezone"]
+    assert result.clarification.field == "time_intent"
+    assert result.clarification.question == "Is that time for arriving or leaving?"
+
+
+def test_model_ambiguity_does_not_override_origin_clarification_or_tomtom_selection() -> None:
+    result = ScheduleExtractionService(MockExtractionClient(parsed_candidate(
+        destination_description="mall", ambiguities=["The destination is ambiguous; which mall do you mean?"]))).extract(
+            "I need to go to the mall tomorrow at 5 PM",
+            reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+            user_timezone="Asia/Manila")
+    assert result.status is ExtractionReviewStatus.NEEDS_CLARIFICATION
+    assert result.clarification.field == "origin_description"
+    assert result.clarification.answer_type == "location"
+    assert result.clarification.question == "Where is the starting point?"
+    assert "The destination is ambiguous; which mall do you mean?" in result.extraction.ambiguities
+
+
 def test_extraction_schema_accepts_explicit_nonnegative_durations() -> None:
     parsed = parsed_candidate(preparation_duration_minutes=25, travel_duration_minutes=40)
     assert parsed.preparation_duration_minutes == 25
@@ -182,7 +219,76 @@ def test_missing_and_ambiguous_information_stays_null_and_is_reported() -> None:
     assert result.extraction.preparation_duration_minutes is None
     assert result.extraction.travel_duration_minutes is None
     assert result.missing_fields == ["time_intent", "target_time_local", "timezone"]
-    assert result.ambiguous_fields == ["time_intent", "ambiguities"]
+    assert result.ambiguous_fields == ["time_intent"]
+    assert result.clarification.field == "time_intent"
+    assert result.clarification.answer_type == "choice"
+    assert result.clarification.options == ["Arrive at that time", "Leave at that time"]
+
+
+def test_clarification_updates_only_target_field_and_preserves_saved_place_ids() -> None:
+    previous = ScheduleExtraction.model_validate_json(json.dumps({
+        **candidate(time_intent="arrival", target_date_local="2026-10-12", target_time_local=None,
+                    origin_description="Home", destination_description="School"),
+        "origin_saved_place_id": 41,
+        "destination_saved_place_id": 42,
+    }))
+    provider_answer = parsed_candidate(target_time_local="08:00:00", origin_description="Unknown origin")
+    result = ScheduleExtractionService(MockExtractionClient(provider_answer)).extract(
+        "I need to arrive at school tomorrow",
+        reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+        user_timezone="Asia/Manila",
+        existing_extraction=previous,
+        clarification_field="target_time_local",
+        clarification_answer="8 AM",
+    )
+    assert result.extraction.time_intent.value == "arrival"
+    assert result.extraction.target_date_local.isoformat() == "2026-10-12"
+    assert result.extraction.origin_description == "Home"
+    assert result.extraction.destination_description == "School"
+    assert result.extraction.origin_saved_place_id == 41
+    assert result.extraction.destination_saved_place_id == 42
+    assert result.extraction.target_time_local.isoformat() == "08:00:00"
+
+
+def test_malformed_clarification_response_keeps_previous_extraction() -> None:
+    previous = ScheduleExtraction.model_validate_json(json.dumps({
+        **candidate(time_intent="arrival", origin_description="Home", destination_description="School"),
+        "origin_saved_place_id": 41,
+        "destination_saved_place_id": 42,
+    }))
+    result = ScheduleExtractionService(MockExtractionClient(AIInvalidOutputError(("model_output",)))).extract(
+        "I need to arrive at school tomorrow",
+        reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+        user_timezone="Asia/Manila",
+        existing_extraction=previous,
+        clarification_field="target_time_local",
+        clarification_answer="At eight",
+    )
+    assert result.status is ExtractionReviewStatus.NEEDS_CLARIFICATION
+    assert result.extraction.origin_saved_place_id == 41
+    assert result.extraction.destination_saved_place_id == 42
+    assert result.extraction.destination_description == "School"
+    assert result.clarification.field == "target_time_local"
+
+
+def test_schedule_request_clarification_can_turn_an_unrelated_message_into_a_schedule() -> None:
+    previous = ScheduleExtraction.model_validate_json(json.dumps(candidate(
+        is_schedule_request=False, time_intent=None, target_date_local=None,
+        target_time_local=None, timezone=None)))
+    result = ScheduleExtractionService(MockExtractionClient(parsed_candidate(
+        is_schedule_request=True, time_intent="arrival", target_date_local="2026-10-12",
+        target_time_local="08:00:00", timezone="Asia/Manila"))).extract(
+            "I have a plan",
+            reference_datetime=datetime.fromisoformat("2026-10-11T20:00:00+08:00"),
+            user_timezone="Asia/Manila",
+            existing_extraction=previous,
+            clarification_field="schedule_request",
+            clarification_answer="Arrive at school tomorrow at 8 AM",
+        )
+    assert result.status is ExtractionReviewStatus.READY_FOR_REVIEW
+    assert result.extraction.is_schedule_request is True
+    assert result.extraction.time_intent.value == "arrival"
+    assert result.extraction.target_date_local.isoformat() == "2026-10-12"
 
 
 def test_extraction_does_not_generate_or_require_a_schedule_title() -> None:

@@ -10,6 +10,7 @@ from zoneinfo import available_timezones
 
 from ai_provider import AIInvalidOutputError, AIProviderError, OpenRouterClient
 from extraction_schemas import (
+    ExtractionClarification,
     ExtractionReviewStatus,
     ScheduleExtraction,
     ScheduleExtractionCandidate,
@@ -42,6 +43,9 @@ class ScheduleExtractionService:
         reference_datetime: datetime,
         user_timezone: str | None = None,
         saved_places: Sequence[SavedPlace] = (),
+        existing_extraction: ScheduleExtraction | None = None,
+        clarification_field: str | None = None,
+        clarification_answer: str | None = None,
     ) -> ScheduleExtractionReview:
         """Extract, resolve, and report readiness for user review."""
         text = user_text.strip() if isinstance(user_text, str) else ""
@@ -92,12 +96,30 @@ class ScheduleExtractionService:
                     "estimate travel time or perform schedule calculations."
                 ),
             },
-            {"role": "user", "content": f"Trusted context:\n{trusted_context}\n\nUser text (untrusted):\n{text}"},
+            {"role": "user", "content": f"Trusted context:\n{trusted_context}"
+                + (f"\nExisting extraction draft (trusted prior result):\n{existing_extraction.model_dump_json()}\n"
+                   f"Clarification field to update: {clarification_field}\n"
+                   "Update only that field; preserve unrelated prior values.\n" if existing_extraction else "")
+                + (f"Clarification answer (untrusted):\n{clarification_answer}\n" if clarification_answer else "")
+                + f"\nUser text and clarification response (untrusted):\n{text}"},
         ]
         provider_started = perf_counter()
         try:
             candidate = self._client.complete_structured(messages, ScheduleExtractionCandidate)
         except AIInvalidOutputError as exc:
+            if existing_extraction is not None:
+                return ScheduleExtractionReview(
+                    status=ExtractionReviewStatus.NEEDS_CLARIFICATION,
+                    extraction=existing_extraction,
+                    resolved_target_datetime=None,
+                    invalid_fields=list(exc.invalid_fields),
+                    clarification=ExtractionClarification(
+                        field=clarification_field or "model_output",
+                        reason="That answer could not be interpreted safely.",
+                        question="Could you say that another way?",
+                        answer_type="text",
+                    ),
+                )
             return ScheduleExtractionReview(
                 status=ExtractionReviewStatus.NEEDS_CLARIFICATION,
                 extraction=None,
@@ -115,6 +137,10 @@ class ScheduleExtractionService:
             raise ScheduleExtractionError("Schedule extraction is temporarily unavailable") from exc
 
         extracted = ScheduleExtraction.model_validate(candidate.model_dump())
+        if existing_extraction is not None:
+            extracted = _merge_clarification_answer(
+                existing_extraction, extracted, clarification_field
+            )
         extracted, model_time_offset = _separate_model_time_offset(extracted)
 
         extracted, saved_place_ambiguities = _attach_saved_place_ids(extracted, saved_places)
@@ -132,19 +158,27 @@ class ScheduleExtractionService:
             )
 
         intended_timezone, timezone_conflict = _resolve_intended_timezone(
-            text, extracted, selected_timezone=user_timezone
+            f"{text} {clarification_answer or ''}", extracted, selected_timezone=user_timezone
         )
         if intended_timezone is not None and not timezone_conflict:
             extracted = extracted.model_copy(update={"timezone": intended_timezone})
 
         missing_fields = extracted.missing_fields
+        # A stated destination implies a route request. There is no account-level
+        # default origin in this app, so ask rather than silently assuming Home.
+        if (
+            extracted.destination_description
+            and not extracted.origin_description
+            and _destination_is_explicitly_requested(text, extracted.destination_description)
+        ):
+            missing_fields.append("origin_description")
         ambiguous_fields: list[str] = []
         invalid_fields: list[str] = []
         if extracted.time_intent_ambiguous:
             ambiguous_fields.append("time_intent")
         if timezone_conflict:
             ambiguous_fields.append("timezone")
-        if extracted.ambiguities:
+        if saved_place_ambiguities:
             ambiguous_fields.append("ambiguities")
 
         if missing_fields or ambiguous_fields:
@@ -194,6 +228,69 @@ class ScheduleExtractionService:
 
 def _normalize_place_reference(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+
+
+def _destination_is_explicitly_requested(user_text: str, destination: str) -> bool:
+    """Avoid treating a general trip mention as a route destination."""
+    endpoint = destination.split(",", 1)[0].strip()
+    if not endpoint:
+        return False
+    place = re.escape(endpoint)
+    patterns = (
+        rf"\b(?:go|going|head|travel|drive|commute)\s+(?:(?:to|toward|towards)\s+)?(?:(?:the|a|an)\s+)?{place}\b",
+        rf"\bvisit\s+(?:(?:the|a|an)\s+)?{place}\b",
+        rf"\b(?:arrive|arriving|reach|get|be)\s+(?:at|in|to)\s+(?:(?:the|a|an)\s+)?{place}\b",
+    )
+    return any(re.search(pattern, user_text, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _merge_clarification_answer(
+    previous: ScheduleExtraction,
+    candidate: ScheduleExtraction,
+    field: str | None,
+) -> ScheduleExtraction:
+    """Apply only the requested correction while retaining every other draft value."""
+    updates: dict[str, object] = {"ambiguities": candidate.ambiguities}
+    target_fields = {
+        "time_intent": ("time_intent", "time_intent_ambiguous"),
+        "target_date_local": ("target_date_local",),
+        "target_time_local": ("target_time_local",),
+        "timezone": ("timezone",),
+        "origin_description": ("origin_description",),
+        "destination_description": ("destination_description",),
+    }
+    fields = target_fields.get(field or "")
+    if fields is None:
+        # A free-text ambiguity response may fill only previously absent fields.
+        fields = tuple(
+            name for name in (
+                "time_intent", "target_date_local", "target_time_local", "timezone",
+                "origin_description", "destination_description",
+            ) if getattr(previous, name) is None and getattr(candidate, name) is not None
+        )
+    if field == "schedule_request":
+        updates["is_schedule_request"] = candidate.is_schedule_request
+        for name in (
+            "time_intent", "target_date_local", "target_time_local", "timezone",
+            "origin_description", "destination_description",
+        ):
+            if getattr(candidate, name) is not None:
+                updates[name] = getattr(candidate, name)
+    for name in fields:
+        updates[name] = getattr(candidate, name)
+    if field in ("time_intent", "schedule_request"):
+        updates["time_intent_ambiguous"] = candidate.time_intent_ambiguous
+    else:
+        updates["time_intent_ambiguous"] = previous.time_intent_ambiguous
+    # Saved-place references are deterministic and are recalculated below from
+    # the preserved or updated user-owned location descriptions.
+    updates["origin_saved_place_id"] = (
+        None if field == "origin_description" else previous.origin_saved_place_id
+    )
+    updates["destination_saved_place_id"] = (
+        None if field == "destination_description" else previous.destination_saved_place_id
+    )
+    return previous.model_copy(update=updates)
 
 
 def _attach_saved_place_ids(

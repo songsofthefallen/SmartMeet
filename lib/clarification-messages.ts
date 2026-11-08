@@ -40,6 +40,8 @@ export function clarificationQuestions(
   review: ScheduleExtractionReview,
   selectedTimezone: string,
 ): string[] {
+  if (review.status === "ready_for_review") return [];
+  if (review.clarification?.question) return [review.clarification.question];
   const questions: string[] = [];
   for (const field of review.missing_fields) {
     if (missingQuestions[field]) questions.push(missingQuestions[field]);
