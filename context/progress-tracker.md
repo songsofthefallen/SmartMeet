@@ -1,5 +1,12 @@
 ## Current Progress
 
+### SmartMeet production route map initialization
+
+- Compared the route preview and Saved Places picker. Both use `createSmartMeetMap` from `lib/tomtom-map.ts` and the same `NEXT_PUBLIC_TOMTOM_MAPS_API_KEY`; the route preview receives validated route geometry and initializes only when its component mounts.
+- The route map used an inline Tailwind viewport-height utility for its canvas and waited until the map `load` event before observing size. It did not explicitly resize before fitting route bounds. Saved Places uses a dedicated CSS module with explicit full-size canvas dimensions. This is the strongest code-level cause found for production layout timing differences; actual production browser evidence is still needed to confirm it explains the deployment symptom.
+- Changed the route canvas to explicit CSS module dimensions, resized it on map load before applying route data and fitting bounds, and retained `ResizeObserver` updates for later layout changes. Error UI now distinguishes SDK initialization from style/tile load failure without exposing raw errors, keys, or coordinates. Route geometry, markers, fit action, pan/zoom, and dark style are preserved.
+- Added regression coverage for explicit route canvas dimensions and resize-before-fit ordering. Verification: frontend suite, TypeScript, ESLint, production build, and `git diff --check` passed; emitted CSS contains the route viewport class and the MapLibre worker is present. Valid route geometry is covered by existing geometry tests, but the map was not exercised in an authenticated production build browser session. The hosted deployment still needs browser verification.
+
 ### SmartMeet public landing and Clerk authentication panel
 
 - The root page keeps its Clerk session check and redirects signed-in users to `/dashboard`. Real sign-in and sign-up components and standalone routes remain in place.
@@ -924,3 +931,10 @@ For each feature-spec change, keep this tracker synchronized with the spec's act
 - Clerk's Secured by Clerk branding is not a code-level appearance option. The official control is Clerk Dashboard → application Settings → Branding → enable Remove "Secured by Clerk" branding; Clerk documents this as free to use in development and requiring a paid plan in production. This dashboard setting was not changed.
 - Added landing regression assertions for badge hiding, flush elevation, development-only warning suppression, and responsive wrapper sizing. Verification: frontend tests, TypeScript, ESLint, production build, and `git diff --check` passed.
 - Live visual check limitation: the open VS Code localhost tab is authenticated and the landing route redirects it to `/dashboard`, so I could not inspect the updated anonymous sign-in card or its mobile rendering in that tab. No browser result is claimed for this pass.
+
+### SmartMeet landing auth mode layout stability
+
+- Root cause: the desktop two-column grid had only a minimum height. Its implicit row expanded to the taller Clerk Create account card, stretching the hero section and its absolutely positioned background artwork. A document scrollbar could also alter viewport width, but the primary height coupling was the shared grid row.
+- Set a fixed desktop grid height from the dynamic viewport below the header and made the account column independently vertically scrollable. The hero/background stays tied to the left grid track. Existing content-driven behavior remains below the desktop breakpoint; no Clerk fields, routing, providers, appearance, or tokens changed.
+- Added layout regression assertions covering the fixed desktop track and independent auth scrolling.
+- Verification: frontend suite, TypeScript, ESLint, production build, and `git diff --check` passed. Headless Chromium checks at 1440x900, 1280x600, and 390x844 showed identical desktop hero bounds across sign-in/create-account; at both desktop sizes the page had no document overflow and sign-up overflowed only its auth column. At mobile width the existing stacked page behavior remains and both forms render. Scrolled the short-desktop Create account panel to its bottom and confirmed Clerk's email form Continue button was visible inside the auth viewport; the document remained viewport-height. The check did not submit account creation.

@@ -5,6 +5,7 @@ import type { TomTomMap } from "@tomtom-org/maps-sdk/map";
 import type { LocationSelection, RouteAlternativeEstimate } from "@/lib/schedule-api";
 import { endpointFeatureCollection, isValidMapCoordinate, routeFeatureCollection, ROUTE_COLORS, selectedRouteOrFirst } from "@/lib/route-map-geometry.js";
 import { createSmartMeetMap } from "@/lib/tomtom-map";
+import styles from "./route-comparison-map.module.css";
 
 const browserMapApiKey = process.env.NEXT_PUBLIC_TOMTOM_MAPS_API_KEY?.trim();
 const routeSourceId = "smartmeet-routes";
@@ -93,6 +94,7 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
           setMapLoading(false);
           setMapError(null);
           const nativeMap = map!.mapLibreMap;
+          nativeMap.resize();
           const current = currentMapData.current;
           setRouteLayers(nativeMap, current.visibleRoutes, current.activeRouteId);
           setEndpointLayers(nativeMap, current.origin, current.destination, current.fitPoints);
@@ -100,11 +102,11 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
           resizeObserver = new ResizeObserver(() => nativeMap.resize());
           if (containerRef.current) resizeObserver.observe(containerRef.current);
         };
-        errorHandler = () => { if (!disposed && !readyRef.current) { setMapLoading(false); setMapError("TomTom map could not be loaded. Route details remain available."); } };
+        errorHandler = () => { if (!disposed && !readyRef.current) { setMapLoading(false); setMapError("TomTom could not load the route map style or tiles. Check the browser console and map key restrictions, then retry."); } };
         map.mapLibreMap.on("load", loadedHandler);
         map.mapLibreMap.on("error", errorHandler);
       } catch {
-        if (!disposed) { setMapLoading(false); setMapError("Interactive map could not be initialized. Route details remain available."); }
+        if (!disposed) { setMapLoading(false); setMapError("Interactive route map initialization failed. Check WebGL support and the browser console, then retry."); }
       }
     })();
     return () => {
@@ -134,8 +136,8 @@ export function RouteComparisonMap({ routes, selectedRouteId, origin, destinatio
   if (!routes.length && !origin && !destination) return null;
 
   return <figure className="mt-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)]" aria-label={mode === "view" ? "Map of the saved driving route" : "Map comparing driving routes"}>
-    <div className="relative h-[min(62vh,30rem)] min-h-72 w-full sm:min-h-80">
-      <div ref={containerRef} className="absolute inset-0" role="application" aria-label="Interactive route map. Drag to pan; use the mouse wheel or controls to zoom." />
+    <div className={styles.mapViewport}>
+      <div ref={containerRef} className={styles.mapCanvas} role="application" aria-label="Interactive route map. Drag to pan; use the mouse wheel or controls to zoom." />
       {mapLoading && <div className="absolute inset-0 z-10 grid place-items-center bg-[var(--surface)]/80 text-sm" role="status">Loading interactive map…</div>}
       {mapError && !mapLoading && <div className="absolute inset-x-2 top-2 z-10 flex items-start justify-between gap-2 rounded-md bg-[var(--state-error-bg)] p-2 text-xs text-[var(--state-error)]" role="alert"><span>{mapError}</span>{browserMapApiKey && <button type="button" className="font-semibold underline" onClick={() => { setMapLoading(true); setMapError(null); setMapAttempt((value) => value + 1); }}>Retry map</button>}</div>}
       <div className="absolute left-2 top-2 z-10 flex flex-wrap gap-1 rounded-lg bg-[var(--surface)]/95 p-1 shadow" aria-label="Map controls"><button type="button" className={control} aria-label="Zoom in map" onClick={() => { const map = mapRef.current?.mapLibreMap; if (map) map.zoomIn({ duration: 150 }); }}>+</button><button type="button" className={control} aria-label="Zoom out map" onClick={() => { const map = mapRef.current?.mapLibreMap; if (map) map.zoomOut({ duration: 150 }); }}>−</button><button type="button" className={control} onClick={fitRoute}>Fit route</button></div>

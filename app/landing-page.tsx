@@ -87,7 +87,7 @@ export default function LandingPage({ initialMode }: { initialMode: AuthMode }) 
           <span className="text-xs text-text-muted sm:hidden">Plan. Leave. Arrive.</span>
         </header>
 
-        <div className="grid min-h-[calc(100vh-83px)] items-start gap-8 py-8 md:gap-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.9fr)] lg:gap-8 lg:py-8 lg:pb-0 xl:gap-12">
+        <div className="grid min-h-[calc(100vh-83px)] items-start gap-8 py-8 md:gap-10 lg:h-[calc(100dvh-83px)] lg:min-h-0 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.9fr)] lg:gap-8 lg:overflow-visible lg:py-8 lg:pb-0 xl:gap-12">
           <section aria-labelledby="hero-title" className="relative isolate mx-auto flex w-full min-w-0 max-w-[820px] flex-col justify-center py-4 lg:mx-0 lg:self-stretch lg:justify-start">
             <HeroArtwork />
             <div className="inline-flex w-fit items-center gap-2 rounded-full border border-brand-primary/25 bg-brand-subtle/70 px-3 py-1.5 text-[10px] font-semibold tracking-[0.16em] text-brand-hover sm:text-[11px]">
@@ -108,7 +108,7 @@ export default function LandingPage({ initialMode }: { initialMode: AuthMode }) 
             </ul>
           </section>
 
-          <aside aria-label="Account access" className="mx-auto box-border w-full min-w-0 max-w-[520px] lg:mx-0 lg:justify-self-end">
+          <aside aria-label="Account access" className="mx-auto box-border w-full min-w-0 max-w-[520px] lg:mx-0 lg:h-full lg:overflow-y-auto lg:overscroll-contain lg:justify-self-end">
             <div className="box-border w-full min-w-0 rounded-[22px] border border-border bg-surface p-5 sm:p-7">
               <div className="mb-6">
                 <p className="text-sm text-text-secondary">Welcome to</p>

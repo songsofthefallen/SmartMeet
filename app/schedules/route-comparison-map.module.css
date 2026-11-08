@@ -1,0 +1,12 @@
+.mapViewport {
+  position: relative;
+  width: 100%;
+  height: clamp(18rem, 62vh, 30rem);
+}
+
+.mapCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
