@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from schemas import RouteAlternative, RouteAlternativeExplanation, RouteRecommendation
+from schemas import RouteAlternative, RouteAlternativeExplanation, RouteRecommendation, classify_traffic_estimate_type
 
 
-def _traffic_available(route: RouteAlternative) -> bool:
-    return (
-        route.traffic_delay_seconds is not None
-        and route.no_traffic_travel_time_seconds is not None
-        and route.no_traffic_travel_time_seconds > 0
-    )
+def _traffic_available(route: RouteAlternative, route_time_basis: str) -> bool:
+    return classify_traffic_estimate_type(
+        route_time_basis=route_time_basis,
+        traffic_delay_seconds=route.traffic_delay_seconds,
+        historic_traffic_travel_time_seconds=route.historic_traffic_travel_time_seconds,
+        live_traffic_incidents_travel_time_seconds=route.live_traffic_incidents_travel_time_seconds,
+    ) != "unavailable"
 
 
 def _delta(seconds: int) -> str:
@@ -26,7 +27,7 @@ def _distance(meters: int) -> str:
     return f"{meters / 1000:.1f} km"
 
 
-def build_route_recommendation(routes: list[RouteAlternative]) -> RouteRecommendation:
+def build_route_recommendation(routes: list[RouteAlternative], *, route_time_basis: str = "current") -> RouteRecommendation:
     """Recommend the shortest valid traffic-adjusted route; preserve input order for ties."""
     valid = [
         route for route in routes
@@ -88,13 +89,13 @@ def build_route_recommendation(routes: list[RouteAlternative]) -> RouteRecommend
             route_id=route.route_id,
             reason_codes=[reason],
             explanation=text,
-            traffic_information_available=_traffic_available(route),
+            traffic_information_available=_traffic_available(route, route_time_basis),
         ))
 
     return RouteRecommendation(
         recommended_route_id=recommended.route_id,
         reason_codes=codes,
         explanation=explanation,
-        traffic_information_available=_traffic_available(recommended),
+        traffic_information_available=_traffic_available(recommended, route_time_basis),
         alternatives=comparisons,
     )

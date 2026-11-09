@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from observability import log_provider_event
-from schemas import LocationSelection, RouteAlternative, TrafficCoordinate, TrafficSection, TravelEstimate
+from schemas import LocationSelection, RouteAlternative, TrafficCoordinate, TrafficSection, TravelEstimate, classify_traffic_estimate_type
 from route_recommendation import build_route_recommendation
 
 logger = logging.getLogger(__name__)
@@ -569,6 +569,13 @@ class TomTomRoutingService:
                     no_traffic_travel_time_seconds=_optional_seconds(summary, "noTrafficTravelTimeInSeconds"),
                     historic_traffic_travel_time_seconds=_optional_seconds(summary, "historicTrafficTravelTimeInSeconds"),
                     live_traffic_incidents_travel_time_seconds=_optional_seconds(summary, "liveTrafficIncidentsTravelTimeInSeconds"),
+                    route_time_basis=time_basis,
+                    traffic_estimate_type=classify_traffic_estimate_type(
+                        route_time_basis=time_basis,
+                        traffic_delay_seconds=_optional_seconds(summary, "trafficDelayInSeconds"),
+                        historic_traffic_travel_time_seconds=_optional_seconds(summary, "historicTrafficTravelTimeInSeconds"),
+                        live_traffic_incidents_travel_time_seconds=_optional_seconds(summary, "liveTrafficIncidentsTravelTimeInSeconds"),
+                    ),
                     traffic_sections=_traffic_sections(
                         candidate, diagnose_unnamed=diagnose_unnamed_traffic_sections,
                         geocode=lambda coordinate: _reverse_geocode_location(coordinate, self.api_key),
@@ -609,7 +616,7 @@ class TomTomRoutingService:
                 traffic_sections=primary.traffic_sections,
                 selected_route_id=primary.route_id,
                 alternatives=alternatives,
-                recommendation=build_route_recommendation(alternatives),
+                recommendation=build_route_recommendation(alternatives, route_time_basis=time_basis),
             )
         except RoutingProviderError:
             raise

@@ -405,6 +405,8 @@ class RouteAlternative(BaseModel):
     no_traffic_travel_time_seconds: int | None = Field(default=None, ge=0)
     historic_traffic_travel_time_seconds: int | None = Field(default=None, ge=0)
     live_traffic_incidents_travel_time_seconds: int | None = Field(default=None, ge=0)
+    route_time_basis: Literal["current", "scheduled_departure", "scheduled_arrival"] = "current"
+    traffic_estimate_type: Literal["live_and_historical", "historical", "live", "unavailable"] = "unavailable"
     traffic_sections: list["TrafficSection"] = Field(default_factory=list, max_length=100)
     road_names: list[Annotated[str, StringConstraints(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=10)
     geometry: list["TrafficCoordinate"] = Field(default_factory=list, max_length=500)
@@ -439,6 +441,7 @@ class TravelEstimate(BaseModel):
     no_traffic_travel_time_seconds: int | None = Field(default=None, ge=0)
     historic_traffic_travel_time_seconds: int | None = Field(default=None, ge=0)
     live_traffic_incidents_travel_time_seconds: int | None = Field(default=None, ge=0)
+    traffic_estimate_type: Literal["live_and_historical", "historical", "live", "unavailable"] = "unavailable"
     traffic_sections: list["TrafficSection"] = Field(default_factory=list, max_length=100)
     selected_route_id: Annotated[str, StringConstraints(min_length=1, max_length=20)] = "0"
     # TomTom's maxAlternatives is additional to the primary route: 1 + 5.
@@ -470,15 +473,24 @@ class TravelEstimate(BaseModel):
 
     @property
     def traffic_data_source(self) -> str:
-        live = self.live_traffic_incidents_travel_time_seconds is not None
-        historical = self.historic_traffic_travel_time_seconds is not None
-        if live and historical:
+        traffic_type = self.traffic_estimate_type
+        if traffic_type == "live_and_historical":
             return "live_and_historical_available"
-        if live:
+        if traffic_type == "live":
             return "live_available"
-        if historical:
+        if traffic_type == "historical":
             return "historical_available"
         return "unknown"
+
+    @model_validator(mode="after")
+    def classify_returned_traffic(self) -> "TravelEstimate":
+        self.traffic_estimate_type = classify_traffic_estimate_type(
+            route_time_basis=self.route_time_basis,
+            traffic_delay_seconds=self.traffic_delay_seconds,
+            historic_traffic_travel_time_seconds=self.historic_traffic_travel_time_seconds,
+            live_traffic_incidents_travel_time_seconds=self.live_traffic_incidents_travel_time_seconds,
+        )
+        return self
 
     @property
     def traffic_status(self) -> str:
@@ -494,6 +506,27 @@ class TravelEstimate(BaseModel):
         if delay >= 600 or ratio >= 0.20:
             return "significant_delay"
         return "some_delay"
+
+
+def classify_traffic_estimate_type(
+    *,
+    route_time_basis: str,
+    traffic_delay_seconds: int | None,
+    historic_traffic_travel_time_seconds: int | None,
+    live_traffic_incidents_travel_time_seconds: int | None,
+) -> Literal["live_and_historical", "historical", "live", "unavailable"]:
+    """Classify returned traffic metrics without treating live data as future observations."""
+    has_historical = historic_traffic_travel_time_seconds is not None
+    if route_time_basis != "current":
+        return "historical" if has_historical else "unavailable"
+    has_live = traffic_delay_seconds is not None or live_traffic_incidents_travel_time_seconds is not None
+    if has_live and has_historical:
+        return "live_and_historical"
+    if has_historical:
+        return "historical"
+    if has_live:
+        return "live"
+    return "unavailable"
 
 
 class LocationSearchRequest(BaseModel):

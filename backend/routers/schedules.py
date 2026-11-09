@@ -197,6 +197,7 @@ def _select_route(estimate: TravelEstimate, route_id: str) -> TravelEstimate:
         "no_traffic_travel_time_seconds": option.no_traffic_travel_time_seconds,
         "historic_traffic_travel_time_seconds": option.historic_traffic_travel_time_seconds,
         "live_traffic_incidents_travel_time_seconds": option.live_traffic_incidents_travel_time_seconds,
+        "traffic_estimate_type": option.traffic_estimate_type,
         "traffic_sections": option.traffic_sections,
         "selected_route_id": option.route_id,
     }, deep=True)

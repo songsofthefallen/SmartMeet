@@ -10,7 +10,7 @@ from main import app
 from routers.schedules import get_routing_service
 from routers.schedules import get_weather_service
 from routing_service import RoutingProviderError, TomTomRoutingService, _reverse_geocode_cache, _reverse_geocode_cache_lock, _reverse_geocode_location, _sample_route_geometry, _tomtom_error_reason, _traffic_sections
-from schemas import LocationSelection, TrafficCoordinate, TrafficSection, TravelEstimate, WeatherAdvisory, WeatherAssessmentDiagnostic, WeatherEstimate
+from schemas import LocationSelection, RouteRecommendation, TrafficCoordinate, TrafficSection, TravelEstimate, WeatherAdvisory, WeatherAssessmentDiagnostic, WeatherEstimate
 from test_schedule_api import api_db, bearer, payload, signing_key
 
 
@@ -579,6 +579,9 @@ def test_tomtom_routing_requests_traffic_and_validates_response(monkeypatch: pyt
     assert result.traffic_delay_minutes == 1
     assert result.traffic_status == "some_delay"
     assert result.traffic_data_source == "live_and_historical_available"
+    assert result.traffic_estimate_type == "live_and_historical"
+    assert result.alternatives[0].traffic_estimate_type == "live_and_historical"
+    assert result.alternatives[0].route_time_basis == "current"
     assert [item.delay_seconds for item in result.traffic_sections] == [301, 900]
     assert result.traffic_sections[0].road_names == ["Verified Road"]
     assert result.traffic_sections[0].road_numbers == ["A10"]
@@ -839,8 +842,8 @@ def test_selected_alternative_replaces_estimate_and_refreshes_weather(api_db: No
 def test_route_options_preview_and_create_use_the_chosen_route(api_db: None, signing_key: str) -> None:
     options = TravelEstimate.model_validate(estimate(37).model_dump() | {"alternatives": [
         {"route_id": "0", "duration_seconds": 2220, "duration_minutes": 37, "distance_meters": 5000, "traffic_delay_seconds": None, "no_traffic_travel_time_seconds": None, "historic_traffic_travel_time_seconds": None, "live_traffic_incidents_travel_time_seconds": None, "traffic_sections": [], "road_names": []},
-        {"route_id": "1", "duration_seconds": 3000, "duration_minutes": 50, "distance_meters": 8000, "traffic_delay_seconds": None, "no_traffic_travel_time_seconds": None, "historic_traffic_travel_time_seconds": None, "live_traffic_incidents_travel_time_seconds": None, "traffic_sections": [], "road_names": []},
-    ]})
+        {"route_id": "1", "duration_seconds": 3000, "duration_minutes": 50, "distance_meters": 8000, "traffic_delay_seconds": None, "no_traffic_travel_time_seconds": None, "historic_traffic_travel_time_seconds": 2700, "live_traffic_incidents_travel_time_seconds": None, "route_time_basis": "scheduled_arrival", "traffic_estimate_type": "historical", "traffic_sections": [], "road_names": []},
+    ], "recommendation": RouteRecommendation(recommended_route_id="0", reason_codes=["shortest_estimated_duration"], explanation="Recommended because this route has the shortest estimated travel time.", traffic_information_available=False)})
     service = StubRouting([options, options])
     app.dependency_overrides[get_routing_service] = lambda: service
     client = TestClient(app)
@@ -857,6 +860,8 @@ def test_route_options_preview_and_create_use_the_chosen_route(api_db: None, sig
     created = client.post("/schedules", headers=headers, json=request | {"selected_route_id": "1"})
     assert created.status_code == 201
     assert created.json()["travel_estimate"]["selected_route_id"] == "1"
+    assert created.json()["travel_estimate"]["traffic_estimate_type"] == "historical"
+    assert created.json()["travel_estimate"]["recommendation"]["recommended_route_id"] == "0"
     assert created.json()["travel_duration_minutes"] == 50
     assert created.json()["calculated_departure_time"] == "2026-10-10T22:10:00Z"
     assert service.calls[0][2].get("arrive_at") is not None
@@ -1120,6 +1125,37 @@ def test_traffic_status_requires_valid_comparison_data(monkeypatch: pytest.Monke
     result = TomTomRoutingService(api_key="test-server-key").estimate(LocationSelection(name="A", latitude=1, longitude=2), LocationSelection(name="B", latitude=3, longitude=4))
     assert result.traffic_status == status
     assert result.traffic_delay_minutes == delay
+
+
+def test_future_route_classifies_historical_estimate_without_claiming_live_conditions(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]:
+            return {"routes": [{"summary": {"travelTimeInSeconds": 900, "lengthInMeters": 3000, "historicTrafficTravelTimeInSeconds": 840, "noTrafficTravelTimeInSeconds": 780}}]}
+    monkeypatch.setattr("routing_service.httpx.get", lambda *args, **kwargs: Response())
+    result = TomTomRoutingService(api_key="test-server-key").estimate(
+        LocationSelection(name="A", latitude=1, longitude=2),
+        LocationSelection(name="B", latitude=3, longitude=4),
+        depart_at=datetime(2026, 10, 15, 8, tzinfo=timezone.utc),
+    )
+    assert result.traffic_estimate_type == "historical"
+    assert result.traffic_data_source == "historical_available"
+    assert result.traffic_delay_seconds is None
+    assert result.alternatives[0].traffic_estimate_type == "historical"
+    assert result.alternatives[0].route_time_basis == "scheduled_departure"
+
+
+def test_no_traffic_time_alone_does_not_make_traffic_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None: pass
+        def json(self) -> dict[str, object]:
+            return {"routes": [{"summary": {"travelTimeInSeconds": 900, "lengthInMeters": 3000, "noTrafficTravelTimeInSeconds": 780}}]}
+    monkeypatch.setattr("routing_service.httpx.get", lambda *args, **kwargs: Response())
+    result = TomTomRoutingService(api_key="test-server-key").estimate(
+        LocationSelection(name="A", latitude=1, longitude=2),
+        LocationSelection(name="B", latitude=3, longitude=4),
+    )
+    assert result.traffic_estimate_type == "unavailable"
 
 
 def test_invalid_traffic_delay_does_not_become_a_valid_route(monkeypatch: pytest.MonkeyPatch) -> None:
