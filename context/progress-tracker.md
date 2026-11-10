@@ -1,5 +1,11 @@
 ## Current Progress
 
+### Compact saved schedule traffic summary
+
+- Saved schedule details show a compact traffic classification, an available route-level delay, and one short historical-estimate explanation. Historical travel time, free-flow travel time, live delay, live incident travel time, retrieval timestamp, and historical/live context remain in a collapsed accessible disclosure.
+- Missing traffic delay is omitted; reported zero is preserved. Optional travel-time metrics are rendered only when present. The existing traffic classification function and provider estimate data are unchanged.
+- Verification passed: frontend suite, `npx tsc --noEmit`, ESLint, production build, and `git diff --check`.
+
 ### Explainable TomTom route recommendation
 
 - Added backend recommendation analysis to existing TomTom route estimates. It selects the shortest traffic-adjusted duration among valid routes, keeps provider order for ties, returns reason codes and alternative comparisons, and does not change the selected route or routing request.
